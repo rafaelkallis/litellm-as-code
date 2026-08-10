@@ -1,0 +1,79 @@
+# litellm-as-code — example declarative spec.
+#
+# This is the source of truth for the RUNTIME state of a LiteLLM proxy:
+# users, teams, team members, virtual keys, credentials, models.
+#
+# Scope: this file does NOT manage the proxy's startup `config.yaml`
+# (general_settings / litellm_settings / router_settings). Those are
+# applied at proxy boot and are not reconciliable over the admin REST API.
+# Keep `config` here (if you need it) purely for reference — the reconciler
+# ignores it.
+
+# Reference only — the reconciler does not read this section.
+config:
+  general_settings:
+    store_model_in_db: true
+  litellm_settings:
+    num_retries: 0
+    drop_params: true
+
+users:
+  - user_id: "username-admin"
+    user_alias: "admin"
+    user_email: "admin@example.com"
+    user_role: "proxy_admin"
+    auto_create_key: "false"
+
+  - user_id: "username-service"
+    user_alias: "service"
+    user_role: "internal_user_viewer"
+    auto_create_key: "false"
+
+teams:
+  - team_id: "team-prod"
+    team_alias: "production"
+    members_with_roles:
+      - user_id: "username-admin"
+        role: "admin"
+      - user_id: "username-service"
+        role: "user"
+
+  - team_id: "team-guest"
+    team_alias: "guest"
+
+virtual_keys:
+  - key_alias: "admin-cli"
+    key: "sk-example-key-value-0000000000000000"
+    user_id: "username-admin"
+
+  - key_alias: "service-readonly"
+    key: "sk-example-key-value-1111111111111111"
+    user_id: "username-service"
+
+credentials:
+  - credential_name: "my-vllm 8000"
+    credential_info:
+      custom_llm_provider: "hosted_vllm"
+    credential_values:
+      api_base: "http://my-vllm:8000/v1"
+      api_key: "sk-example-provider-key"
+
+models:
+  - model_name: "myorg/chat"
+    model_info:
+      id: "11111111-2222-3333-4444-555555555555"
+      mode: "chat"
+      base_model: "some-chat-model"
+      input_cost_per_million_tokens: 3.0
+      output_cost_per_million_tokens: 15.0
+    litellm_params:
+      model: "hosted_vllm/some-chat-model"
+      litellm_credential_name: "my-vllm 8000"
+
+  - model_name: "myorg/embedding"
+    model_info:
+      mode: "embedding"
+      base_model: "some-embedding-model"
+    litellm_params:
+      model: "huggingface/some-embedding-model"
+      litellm_credential_name: "my-vllm 8000"
