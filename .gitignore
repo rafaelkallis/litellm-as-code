@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Test / tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Applied state must NEVER be committed (contains secrets).
+state.json
+*.state.json
+
+# Edition / IDE
+.idea/
+.vscode/
+.DS_Store

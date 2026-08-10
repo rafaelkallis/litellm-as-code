@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "litellm-as-code"
+version = "0.1.0"
+description = "Declarative runtime-state management for a LiteLLM proxy: reconcile users/teams/keys/credentials/models from a YAML spec."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Rafael Kallis" }]
+keywords = ["litellm", "ai-gateway", "declarative", "as-code", "reconciler", "config"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Software Development :: Build Tools",
+]
+dependencies = [
+    "requests>=2.31",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-mock>=3.10",
+]
+
+[project.scripts]
+litellm-as-code = "litellm_as_code.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["litellm_as_code*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
