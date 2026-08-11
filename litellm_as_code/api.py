@@ -177,3 +177,96 @@ class LiteLLMClient:
 
     def delete_model(self, model_id: str) -> dict[str, Any]:
         return self._request("POST", "/model/delete", json={"id": model_id})
+
+    # -- budgets ------------------------------------------------------------
+    def list_budgets(self) -> list[dict[str, Any]]:
+        # GET /budget/list answers with a bare array (not an object wrapper).
+        payload = self._request("GET", "/budget/list")
+        if isinstance(payload, list):
+            return payload
+        return payload.get("budgets", [])
+
+    def create_budget(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/budget/new", json=payload)
+
+    def update_budget(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/budget/update", json=payload)
+
+    def delete_budget(self, budget_id: str) -> dict[str, Any]:
+        return self._request("POST", "/budget/delete", json={"id": budget_id})
+
+    # -- organizations ------------------------------------------------------
+    def list_organizations(self) -> list[dict[str, Any]]:
+        payload = self._request("GET", "/organization/list")
+        if isinstance(payload, list):
+            return payload
+        return payload.get("organizations", [])
+
+    def create_organization(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/organization/new", json=payload)
+
+    def update_organization(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("PATCH", "/organization/update", json=payload)
+
+    def delete_organization(self, organization_id: str) -> dict[str, Any]:
+        return self._request(
+            "DELETE", "/organization/delete", json={"organization_ids": [organization_id]}
+        )
+
+    def add_organization_members(
+        self, organization_id: str, members: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/organization/member_add",
+            json={"organization_id": organization_id, "member": members},
+        )
+
+    def update_organization_member(
+        self,
+        organization_id: str,
+        user_id: str,
+        *,
+        role: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"organization_id": organization_id, "user_id": user_id}
+        if role:
+            payload["role"] = role
+        return self._request("PATCH", "/organization/member_update", json=payload)
+
+    def delete_organization_member(
+        self, organization_id: str, user_id: str
+    ) -> dict[str, Any]:
+        return self._request(
+            "DELETE",
+            "/organization/member_delete",
+            json={"organization_id": organization_id, "user_id": user_id},
+        )
+
+    # -- guardrails ---------------------------------------------------------
+    def list_guardrails(self) -> list[dict[str, Any]]:
+        # v2 lists DB-stored guardrails (v1 lists config.yaml entries only).
+        return self._request("GET", "/v2/guardrails/list").get("guardrails", [])
+
+    def create_guardrail(self, payload: dict[str, Any]) -> dict[str, Any]:
+        # POST /guardrails expects the guardrail nested under "guardrail".
+        return self._request("POST", "/guardrails", json={"guardrail": payload})
+
+    def update_guardrail(self, guardrail_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("PATCH", f"/guardrails/{quote(guardrail_id, safe='')}", json=payload)
+
+    def delete_guardrail(self, guardrail_id: str) -> dict[str, Any]:
+        return self._request("DELETE", f"/guardrails/{quote(guardrail_id, safe='')}")
+
+    # -- policies -----------------------------------------------------------
+    def list_policies(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/policies/list").get("policies", [])
+
+    def create_policy(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/policies", json=payload)
+
+    def update_policy(self, policy_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("PUT", f"/policies/{quote(policy_id, safe='')}", json=payload)
+
+    def delete_policy(self, policy_id: str) -> dict[str, Any]:
+        return self._request("DELETE", f"/policies/{quote(policy_id, safe='')}")

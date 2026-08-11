@@ -7,9 +7,14 @@ from typing import Any
 from .api import LiteLLMClient
 from .log import banner, info
 from .resources import (
+    reconcile_budgets,
     reconcile_credentials,
+    reconcile_guardrails,
     reconcile_keys,
     reconcile_models,
+    reconcile_org_members,
+    reconcile_organizations,
+    reconcile_policies,
     reconcile_team_members,
     reconcile_teams,
     reconcile_users,
@@ -37,14 +42,25 @@ def reconcile(
 ) -> Plan:
     """Run the convergence loop: spec diff -> apply (unless dry-run).
 
-    Ordering is fixed: users -> teams -> team members -> keys -> credentials
-    -> models. This is acyclic for a single proxy, so no graph solver is needed.
+    Ordering is fixed: budgets -> organizations -> org members -> users ->
+    teams -> team members -> keys -> credentials -> models -> guardrails ->
+    policies. This is acyclic for a single proxy, so no graph solver is needed.
     """
     spec = load_spec(spec_path)
     plan = Plan()
 
     def extend(diffs):
         plan.diffs.extend(diffs)
+
+    banner("Budgets")
+    extend(reconcile_budgets(client, spec.get("budgets", []), dry_run=dry_run))
+
+    banner("Organizations")
+    org_diffs, org_specs = reconcile_organizations(
+        client, spec.get("organizations", []), dry_run=dry_run
+    )
+    extend(org_diffs)
+    extend(reconcile_org_members(client, org_specs, dry_run=dry_run))
 
     banner("Users")
     extend(reconcile_users(client, spec.get("users", []), dry_run=dry_run))
@@ -66,6 +82,12 @@ def reconcile(
 
     banner("Models")
     extend(reconcile_models(client, spec.get("models", []), dry_run=dry_run))
+
+    banner("Guardrails")
+    extend(reconcile_guardrails(client, spec.get("guardrails", []), dry_run=dry_run))
+
+    banner("Policies")
+    extend(reconcile_policies(client, spec.get("policies", []), dry_run=dry_run))
 
     return plan
 
