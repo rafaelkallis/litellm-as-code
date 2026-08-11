@@ -7,4 +7,4 @@ against a declarative YAML spec, applying only the deltas — the same
 LiteLLM admin REST API.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.4.0"
