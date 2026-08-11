@@ -46,6 +46,18 @@ Secret fields are write-once: sent on create (keys) or re-asserted only when a
 comparable change already triggered an update (credentials, via idempotent PATCH).
 No state file, so there is nothing to lose or drift out of band.
 
+Spec validation: `load_spec` runs declarative per-resource validation
+(`litellm_as_code/validation.py`, Pydantic) *before* any API call. It enforces
+required identity fields (matching what reconcilers index — a missing identity
+is caught here, not as a bare `KeyError` mid-reconcile), types, and role enums,
+and it **collects all errors in one pass** (no fail-fast). Unknown **top-level
+sections are a hard `SpecError`**; unknown **per-resource keys are non-fatal
+warnings** (entries pass through verbatim — keep `extra="allow"` on the models
+or reconcilers will receive stripped dicts). Nested opaque payloads
+(`credential_values`, `litellm_params`, `model_info`) are deliberately
+un-schematized. Rejecting/relaxing validation requires touching `spec.py` +
+`validation.py` + `tests/test_spec_validation.py` together.
+
 ## 4. LiteLLM API quirks (must-know, learned the hard way)
 
 Nested read envelopes — the reconciler must unwrap these:
@@ -105,8 +117,9 @@ Exit codes: `0` = clean/no diff (applied or no-op); `1` = error;
 - Python >=3.10, typed with `from __future__ import annotations`.
 - `my_conf`: students of Google Python Style (line length split), classes
   CamelCase, methods snake_case. Keep diffs tight — diff only COMPARABLE fields.
-- No third-party runtime deps beyond `requests` + `PyYAML`. Dev deps:
-  `pytest`, `pytest-mock`.
+- Runtime deps: `requests`, `PyYAML`, and `pydantic` (used for declarative
+  spec validation in `litellm_as_code/validation.py`). Dev deps: `pytest`,
+  `pytest-mock`.
 - Tests are **mock-only** (no live LiteLLM). Add tests under `tests/` that
   mirror `litellm_as_code/` 1:1.
 - `LiteLLMClient` is the only place that talks HTTP; resources must go through

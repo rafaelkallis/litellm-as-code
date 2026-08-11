@@ -217,6 +217,34 @@ LiteLLM API quirks handled internally: nested read envelopes
 runtime metrics (never diffed), and exponential-backoff retries for
 read-after-create eventual consistency.
 
+## Spec validation
+
+Specs are validated **before any API call** (inside `load_spec`, so even
+`--dry-run` rejects a malformed spec). Validation is declarative and
+per-resource (Pydantic models in `litellm_as_code/validation.py`):
+
+- **Required identity fields** per resource (`user_id`, `key_alias`,
+  `credential_name`, `model_name`, `guardrail_name`, `policy_name`,
+  `budget_id`, and at least one of `team_id`/`team_alias` or
+  `organization_id`/`organization_alias`).
+- **Types & enums** for the manageable fields (budget limits as numbers,
+  `user_role` and member `role` as allowed enum values, model/route lists,
+  etc.). The `key` value is only checked as a non-empty string when present
+  — it is write-once and never diffed.
+- **All errors are collected and reported in one pass** — you see every
+  problem in the spec at once (no fail-fast), and the CLI exits `1`.
+- **Unknown top-level sections are a hard error** (typo guard).
+- **Unknown per-resource keys are warnings only** — LiteLLM keeps adding
+  fields, so an extra key doesn't block a run; entries are passed through
+  verbatim and the reconciler's `[warn]` output flags them on stderr.
+  Warnings never affect the exit code.
+
+Nested opaque payloads (`credential_values`, `litellm_params`, `model_info`,
+`metadata`) are intentionally not closed schemas — providers pass arbitrary
+params — so only their well-known subfields are type-checked. Cross-resource
+reference checks (e.g. a key's `user_id` existing in `users`) are out of
+scope for now.
+
 ## Available tools (lookup helpers)
 
 Not yet covered; the admin list endpoints this project relies on are:

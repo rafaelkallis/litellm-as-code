@@ -7,6 +7,9 @@ from typing import Any
 
 import yaml
 
+from .log import warn
+from .validation import format_spec_errors, validate_spec
+
 
 class SpecError(ValueError):
     """Raised when the YAML spec is malformed."""
@@ -58,5 +61,13 @@ def load_spec(path: str | Path) -> dict[str, Any]:
     unknown = set(data) - allowed
     if unknown:
         raise SpecError(f"unknown top-level sections in {path}: {sorted(unknown)}")
+
+    # Per-resource schema validation: collect ALL errors (no fail-fast) and
+    # surface unknown per-resource keys as non-fatal warnings.
+    errors, warnings = validate_spec(data)
+    for w in warnings:
+        warn("spec", w)
+    if errors:
+        raise SpecError(f"invalid spec {path}:\n{format_spec_errors(errors)}")
 
     return data
