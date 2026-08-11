@@ -46,8 +46,8 @@ spec is accepted for reference and ignored.
 
 ```bash
 pip install .            # from source
-# or
-docker build -t litellm-as-code .
+# or use the prebuilt image (see Docker below):
+docker pull ghcr.io/rafaelkallis/litellm-as-code:latest
 ```
 
 (Or copy `examples/spec.yml` and run from a venv: `pip install -e .`)
@@ -134,13 +134,19 @@ Exit codes: `0` clean/no-op · `1` error · `2` diff present (`--dry-run` only).
 
 ## Docker
 
+Images are published to **GitHub Container Registry**, tagged with each release
+version and `latest` (multi-arch `linux/amd64` + `linux/arm64`):
+
 ```bash
 docker run --rm \
   -e LITELLM_BASE_URL="http://proxy:4000" \
   -e LITELLM_API_KEY="sk-admin-..." \
   -v "$PWD/spec.yml:/config/spec.yml:ro" \
-  litellm-as-code --dry-run
+  ghcr.io/rafaelkallis/litellm-as-code:latest --dry-run
 ```
+
+Or build from source with `docker build -t litellm-as-code .` and use
+`litellm-as-code` in place of the image name above.
 
 The image defaults to `LITELLM_SPEC=/config/spec.yml` and runs as a non-root
 user. No secrets are persisted by the tool (the spec mounts its own credentials).

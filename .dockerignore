@@ -1,0 +1,27 @@
+# Git
+.git
+.gitignore
+
+# Python build/runtime artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Test / tooling output
+tests/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Repo-level files not needed inside the image
+.github/
+examples/
+Dockerfile
+.dockerignore
+uv.lock
