@@ -11,7 +11,6 @@ import json
 import pytest
 
 from litellm_as_code.reconciler import reconcile
-from litellm_as_code.state import StateStore
 from litellm_as_code.types import Action
 
 from tests import make_fake_client
@@ -52,40 +51,30 @@ SPEC = {
 
 
 @pytest.fixture
-def ctx(tmp_path):
+def ctx():
     client, fake = make_fake_client()
-    store = StateStore(tmp_path / "state.json")
-    return client, fake, store
+    return client, fake
 
 
 def test_first_run_creates_everything(ctx, tmp_path):
-    client, fake, store = ctx
+    client, fake = ctx
     spec = tmp_path / "spec.yml"
     spec.write_text(json.dumps(SPEC))
 
-    state = store.load()
-    plan = reconcile(str(spec), client, state, dry_run=False)
-    store.save(state)  # CLI run() does this; unit test mirrors it
+    plan = reconcile(str(spec), client, dry_run=False)
 
     assert plan.create_count == 8  # 2 users + team + 2 members + key + cred + model
     assert plan.update_count == 0
     assert plan.noop_count == 0
-    # state file now knows the key/credential secrets
-    assert "k1" in store.load().keys
-    assert store.load().credentials["c1"]["api_key"] == "sk-provider"
 
 
 def test_second_run_is_noop(ctx, tmp_path):
-    client, fake, store = ctx
+    client, fake = ctx
     spec = tmp_path / "spec.yml"
     spec.write_text(json.dumps(SPEC))
 
-    state = store.load()
-    reconcile(str(spec), client, state, dry_run=False)
-    store.save(state)
-    state = store.load()
-    plan = reconcile(str(spec), client, state, dry_run=False)
-    store.save(state)
+    reconcile(str(spec), client, dry_run=False)
+    plan = reconcile(str(spec), client, dry_run=False)
 
     assert plan.create_count == 0
     assert plan.update_count == 0
@@ -94,12 +83,11 @@ def test_second_run_is_noop(ctx, tmp_path):
     assert plan.noop_count == 6
 
 def test_dry_run_does_not_mutate(ctx, tmp_path):
-    client, fake, store = ctx
+    client, fake = ctx
     spec = tmp_path / "spec.yml"
     spec.write_text(json.dumps(SPEC))
 
-    state = store.load()
-    plan = reconcile(str(spec), client, state, dry_run=True)
+    plan = reconcile(str(spec), client, dry_run=True)
 
     # In dry-run the team doesn't exist, so its members fold into a single
     # "team/* members" placeholder diff -> 7 create diffs (not 8 per-member).
@@ -109,37 +97,30 @@ def test_dry_run_does_not_mutate(ctx, tmp_path):
     assert len(fake.keys) == 0
     assert len(fake.credentials) == 0
     assert len(fake.models) == 0
-    assert state.keys == {}  # in-memory state untouched in dry-run
 
 
 def test_drift_detects_role_change(ctx, tmp_path):
-    client, fake, store = ctx
+    client, fake = ctx
     spec = tmp_path / "spec.yml"
     spec.write_text(json.dumps(SPEC))
-    state = store.load()
-    reconcile(str(spec), client, state, dry_run=False)
-    store.save(state)
+    reconcile(str(spec), client, dry_run=False)
 
     # user u2 role changes
     changed = json.loads(spec.read_text())
     changed["users"][1]["user_role"] = "proxy_admin"
     spec.write_text(json.dumps(changed))
 
-    state = store.load()
-    plan = reconcile(str(spec), client, state, dry_run=False)
-    store.save(state)
+    plan = reconcile(str(spec), client, dry_run=False)
     updates = {d.name: d for d in plan.diffs if d.action is Action.UPDATE}
     assert "worker" in updates
     assert "user_role" in updates["worker"].changes
 
 
 def test_key_is_not_rotated_on_update(ctx, tmp_path):
-    client, fake, store = ctx
+    client, fake = ctx
     spec = tmp_path / "spec.yml"
     spec.write_text(json.dumps(SPEC))
-    state = store.load()
-    reconcile(str(spec), client, state, dry_run=False)
-    store.save(state)
+    reconcile(str(spec), client, dry_run=False)
 
     original_key = fake.keys["k1"]["key"]
 
@@ -148,38 +129,39 @@ def test_key_is_not_rotated_on_update(ctx, tmp_path):
     changed["virtual_keys"][0]["models"] = ["org/chat"]
     spec.write_text(json.dumps(changed))
 
-    state = store.load()
-    reconcile(str(spec), client, state, dry_run=False)
-    store.save(state)
+    reconcile(str(spec), client, dry_run=False)
     assert fake.keys["k1"]["key"] == original_key  # no rotation
 
 
-def test_credential_secret_drift_triggers_patch(ctx, tmp_path):
-    client, fake, store = ctx
+def test_credential_secret_is_reasserted_on_patch(ctx, tmp_path):
+    client, fake = ctx
     spec = tmp_path / "spec.yml"
     spec.write_text(json.dumps(SPEC))
-    state = store.load()
-    reconcile(str(spec), client, state, dry_run=False)
-    store.save(state)
+    reconcile(str(spec), client, dry_run=False)
 
+    # Change a comparable field AND update a secret value together. Because a
+    # comparable change triggers a PATCH, the updated credential_values are
+    # re-asserted too (they cannot be diffed against live — the API masks them).
     changed = json.loads(spec.read_text())
+    changed["credentials"][0]["credential_info"]["custom_llm_provider"] = "openai"
     changed["credentials"][0]["credential_values"]["api_key"] = "sk-rotated"
     spec.write_text(json.dumps(changed))
 
-    state = store.load()
-    plan = reconcile(str(spec), client, state, dry_run=False)
-    store.save(state)
+    plan = reconcile(str(spec), client, dry_run=False)
     updates = [d for d in plan.diffs if d.action is Action.UPDATE]
     assert any(d.name == "c1" for d in updates)
-    assert store.load().credentials["c1"]["api_key"] == "sk-rotated"
+    # Server-side values were re-asserted (read back masked proves persistence).
+    assert client.get_credential_by_name("c1")["credential_values"] == {
+        "api_key": "sk-r***",
+        "api_base": "http***",
+    }
 
 
 def test_team_member_role_update_and_removal(ctx, tmp_path):
-    client, fake, store = ctx
+    client, fake = ctx
     spec = tmp_path / "spec.yml"
     spec.write_text(json.dumps(SPEC))
-    state = store.load()
-    reconcile(str(spec), client, state, dry_run=False)
+    reconcile(str(spec), client, dry_run=False)
 
     # change u2's role and drop u1 from the team
     changed = json.loads(spec.read_text())
@@ -188,7 +170,7 @@ def test_team_member_role_update_and_removal(ctx, tmp_path):
     ]
     spec.write_text(json.dumps(changed))
 
-    plan = reconcile(str(spec), client, state, dry_run=False)
+    plan = reconcile(str(spec), client, dry_run=False)
     updates = {d.name: d for d in plan.diffs if d.action is Action.UPDATE}
 
     # role update for u2 within the team
@@ -204,15 +186,14 @@ def test_team_member_role_update_and_removal(ctx, tmp_path):
 def test_model_cost_is_stable_across_reconciles(ctx, tmp_path):
     """Per-million cost in the spec must map onto the per-token cost the fake
     proxy stores — and back — so a second run is a no-op (no perpetual drift)."""
-    client, fake, store = ctx
+    client, fake = ctx
     spec = tmp_path / "spec.yml"
     spec.write_text(json.dumps(SPEC))
-    state = store.load()
 
-    plan1 = reconcile(str(spec), client, state, dry_run=False)
+    plan1 = reconcile(str(spec), client, dry_run=False)
     assert any(d.name == "org/chat" and d.action is Action.CREATE for d in plan1.diffs)
 
-    plan2 = reconcile(str(spec), client, state, dry_run=False)
+    plan2 = reconcile(str(spec), client, dry_run=False)
     model_diffs = [d for d in plan2.diffs if d.resource_type == "model"]
     assert all(d.action is Action.NOOP for d in model_diffs)
 

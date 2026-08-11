@@ -9,9 +9,8 @@ COPY pyproject.toml README.md ./
 COPY litellm_as_code ./litellm_as_code
 RUN pip install --no-cache-dir .
 
-# The mounted spec & writable state live outside the image.
-ENV LITELLM_SPEC=/config/spec.yml \
-    LITELLM_STATE=/state/state.json
+# The mounted spec lives outside the image.
+ENV LITELLM_SPEC=/config/spec.yml
 
 USER ascode
 ENTRYPOINT ["litellm-as-code"]

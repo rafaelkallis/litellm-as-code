@@ -22,6 +22,7 @@ class FakeLiteLLM:
         self.team_members: dict[str, dict[str, str]] = {}  # (team_id,user_id)->role
         self.keys: dict[str, dict[str, Any]] = {}  # alias -> key obj
         self.credentials: dict[str, dict[str, Any]] = {}  # name -> cred obj
+        self._stored_credential_values: dict[str, dict[str, Any]] = {}  # name -> values
         self.models: dict[str, dict[str, Any]] = {}  # model_name -> model obj
 
     # -- wire up to LiteLLMClient via monkeypatched session --
@@ -46,6 +47,7 @@ class FakeLiteLLM:
         client.list_credentials = lambda: list(self.credentials.values())  # type: ignore[method-assign]
         client.create_credential = self._create_credential  # type: ignore[method-assign]
         client.patch_credential = self._patch_credential  # type: ignore[method-assign]
+        client.get_credential_by_name = self._credential_by_name  # type: ignore[method-assign]
 
         client.list_models = lambda: list(self.models.values())  # type: ignore[method-assign]
         client.create_model = self._create_model  # type: ignore[method-assign]
@@ -116,15 +118,28 @@ class FakeLiteLLM:
     # -- credentials --------------------------------------------------------
     def _create_credential(self, payload):  # type: ignore[no-untyped-def]
         name = payload["credential_name"]
-        # mimic real API: values NOT stored (never read back)
+        # mimic real API: values stored server-side, never echoed back on read
+        self._stored_credential_values[name] = dict(payload.get("credential_values", {}))
         stored = {**payload, "credential_values": {}}
         self.credentials[name] = stored
         return {}
 
     def _patch_credential(self, name, payload):  # type: ignore[no-untyped-def]
+        # If values are re-asserted on the wire, update the stored (server-side)
+        # value too; the read path still masks them.
+        if payload.get("credential_values"):
+            self._stored_credential_values[name] = dict(payload["credential_values"])
         stored = {**payload, "credential_values": {}}
         self.credentials[name].update(stored)
         return {}
+
+    def _credential_by_name(self, name):  # type: ignore[no-untyped-def]
+        # GET /credentials/by_name/{name} masks values, like the real API.
+        cred = dict(self.credentials.get(name, {}))
+        stored = self._stored_credential_values.get(name, {})
+        masked = {k: (f"{str(v)[:4]}***" if v else v) for k, v in stored.items()}
+        cred["credential_values"] = masked
+        return cred
 
     # -- models -------------------------------------------------------------
     def _create_model(self, payload):  # type: ignore[no-untyped-def]

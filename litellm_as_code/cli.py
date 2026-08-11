@@ -37,11 +37,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="admin API key (env: LITELLM_API_KEY)",
     )
     p.add_argument(
-        "--state",
-        default=os.environ.get("LITELLM_STATE", "state.json"),
-        help="path to the applied-state file (default: state.json)",
-    )
-    p.add_argument(
         "--dry-run",
         action="store_true",
         help="print what would change without applying anything (exit 2 on diff)",
@@ -69,7 +64,6 @@ def main(argv: list[str] | None = None) -> int:
             args.spec,
             base_url=args.base_url,
             api_key=args.api_key,
-            state_path=args.state,
             dry_run=args.dry_run,
             prune=args.prune,
         )

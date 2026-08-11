@@ -48,7 +48,7 @@ class Diff:
 
 @dataclass
 class Plan:
-    """The result of diffing a spec against live API (+ local state)."""
+    """The result of diffing a spec against the live API."""
 
     diffs: list[Diff] = field(default_factory=list)
 

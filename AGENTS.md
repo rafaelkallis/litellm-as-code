@@ -18,25 +18,33 @@ proxy's startup `config.yaml`.
   not reconciliable over the admin REST API. The spec may contain a `config:`
   section, but the reconciler ignores it. Do not add code that reads it.
 - **Secret material is never read back from the API.** `credential_values`
-  and a key's raw `key` value come back from GET endpoints as empty/absent.
-  That is a deliberate LiteLLM design; our `.state.json` exists precisely for
-  this. Do not attempt to "fix" drift by re-reading secrets from the API.
-- **Never send `key` on `/key/update`** — doing so rotates the key. The
-  reconciler only sends `key` on create (`POST /key/generate`). Preserve this.
+  are returned masked (never plaintext) and a key's raw `key` value comes back
+  absent. That is deliberate LiteLLM design. Secrets are therefore **write-once**:
+  diffing them against the live API is neither possible nor attempted. Do not
+  attempt to "fix" drift by re-reading secrets from the API.
+- **Never send `key` on `/key/update`** — updates must only touch comparable
+  fields; sending `key` would re-assert/rotate it. The reconciler only sends
+  `key` on create (`POST /key/generate`). Preserve this.
 
 ## 3. The convergence model
 
 ```
-spec.yml  --diff-->  live API + .state.json  --apply-->  converge
+spec.yml  --diff-->  live API  --apply-->  converge
 ```
 
 Ordering is fixed: `users -> teams -> team members -> keys -> credentials ->
 models`. Acyclic & single-target; do not add a graph solver.
 
-Two sources of truth:
-- **Live API** decides drift for all *comparable* (non-secret) fields.
-- **`.state.json`** decides whether a secret was already sent, and with what
-  value, so we don't re-rotate keys / re-send secrets on every run.
+Identity is **fully API-derived** — there is no local applied-state file:
+- key existence: `key_alias` (uniqueness enforced by the proxy) from `/key/list`;
+- credential existence: `credential_name` (unique column) from `/credentials`;
+- user/team/model existence: `user_id` / `team_id` / `model_name` from `/user/list`,
+  `/v2/team/list`, `/model/info`.
+
+The single live API decides drift for all *comparable* (non-secret) fields.
+Secret fields are write-once: sent on create (keys) or re-asserted only when a
+comparable change already triggered an update (credentials, via idempotent PATCH).
+No state file, so there is nothing to lose or drift out of band.
 
 ## 4. LiteLLM API quirks (must-know, learned the hard way)
 
@@ -46,6 +54,11 @@ Nested read envelopes — the reconciler must unwrap these:
 - `/team/info` -> `{ "team_info": {...} }`
 - `/model/info` (list) -> `{ "data": [...] }`
 - `/tag/info` -> map keyed by tag name
+
+Credential masking: `GET /credentials` and `/credentials/by_name/{name}` return
+`credential_values` with each value masked (`_get_masked_values`), never
+plaintext. Never treat those masked values as desired state, and never diff
+`credential_values` against live.
 
 Server-injected defaults: LiteLLM may inject `default_user_id`,
 `budget_duration`, `mode`, and metadata interns (`tpm_limit_type`,
@@ -66,7 +79,7 @@ backoff. Keep new resources on the retry path.
 | team | `team_id` (or `team_alias` fallback) | team_alias, organization_id, max_budget, budget_duration, models |
 | team member | (team_id, user_id) | role |
 | key | `key_alias` | user_id, team_id, models, max_budget, budget_duration, allowed_routes |
-| credential | `credential_name` | credential_info, model_id (values via state) |
+| credential | `credential_name` | credential_info, model_id (values are write-once) |
 | model | `model_name` | mode, base_model, tier, custom_llm_provider, litellm_credential_name, costs |
 
 Model cost conversion: spec uses `input_cost_per_million_tokens` /
@@ -76,11 +89,10 @@ per-token. Convert ÷1e6 when sending, and back when comparing.
 ## 6. CLI contract (stable)
 
 ```
-litellm-as-code <spec> [--base-url URL] [--api-key KEY] [--state FILE] [--dry-run] [--prune]
+litellm-as-code <spec> [--base-url URL] [--api-key KEY] [--dry-run] [--prune]
 ```
 
-Env aliases: `LITELLM_SPEC`, `LITELLM_BASE_URL`/`BASE_URL`, `LITELLM_API_KEY`/`API_KEY`,
-`LITELLM_STATE` (default `state.json`).
+Env aliases: `LITELLM_SPEC`, `LITELLM_BASE_URL`/`BASE_URL`, `LITELLM_API_KEY`/`API_KEY`.
 
 Exit codes: `0` = clean/no diff (applied or no-op); `1` = error;
 `2` = plan/apply showed changes **in `--dry-run`** (CI-friendly, like

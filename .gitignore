@@ -14,10 +14,6 @@ venv/
 .coverage
 htmlcov/
 
-# Applied state must NEVER be committed (contains secrets).
-state.json
-*.state.json
-
 # Edition / IDE
 .idea/
 .vscode/

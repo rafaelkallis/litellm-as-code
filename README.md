@@ -11,11 +11,11 @@ the LiteLLM admin REST API.
 Key properties:
 
 - **Declarative & idempotent** — run twice, second run is a no-op. Existing
-  virtual keys are **never rotated** (see *Secrets & state*).
+  virtual keys are **never rotated** (see *Secrets*).
 - **Plan before apply** — `--dry-run` prints exactly what would change and
   exits non-zero if a diff exists (CI-friendly).
-- **Drift-aware** — diffs manageable fields against the live proxy, not just
-  against a local file.
+- **Drift-aware** — identity & drift come entirely from the **live proxy**
+  (no local state file); comparable fields are diffed against the API.
 - **Lightweight** — a single Python CLI or container; no Terraform, no graph
   engine.
 
@@ -69,8 +69,8 @@ litellm-as-code spec.yml --dry-run
 litellm-as-code spec.yml
 ```
 
-Output `/state/state.json` is written by default; keep it out of version
-control and on a persistent volume.
+No local state file is written — the live proxy is the single source of truth
+for what exists and what drifted.
 
 ## Example spec
 
@@ -118,7 +118,7 @@ models:
 
 ```
 usage: litellm-as-code [--version] [--base-url URL] [--api-key KEY]
-                       [--state FILE] [--dry-run] [--prune] [spec]
+                       [--dry-run] [--prune] [spec]
 
 positional:
   spec                   path to YAML spec (env: LITELLM_SPEC, default spec.yml)
@@ -126,7 +126,6 @@ positional:
 options:
   --base-url URL         LiteLLM proxy base URL (env: LITELLM_BASE_URL / BASE_URL)
   --api-key KEY          admin API key (env: LITELLM_API_KEY / API_KEY)
-  --state FILE           applied-state file (env: LITELLM_STATE, default state.json)
   --dry-run              print changes without applying; exit 2 if any
   --prune                (reserved) delete live resources absent from spec
 ```
@@ -136,42 +135,38 @@ Exit codes: `0` clean/no-op · `1` error · `2` diff present (`--dry-run` only).
 ## Docker
 
 ```bash
-# persist applied-state across runs:
 docker run --rm \
   -e LITELLM_BASE_URL="http://proxy:4000" \
   -e LITELLM_API_KEY="sk-admin-..." \
   -v "$PWD/spec.yml:/config/spec.yml:ro" \
-  -v "$PWD/state:/state" \
   litellm-as-code --dry-run
 ```
 
-The image defaults to `LITELLM_SPEC=/config/spec.yml` and
-`LITELLM_STATE=/state/state.json` and runs as a non-root user.
+The image defaults to `LITELLM_SPEC=/config/spec.yml` and runs as a non-root
+user. No secrets are persisted by the tool (the spec mounts its own credentials).
 
-## Secrets & applied-state (`state.json`)
+## Secrets
 
 LiteLLM's admin API **never returns secret material back**: `credential_values`
-and a virtual key's raw `key` value are stored by the proxy but not echoed by
-GET endpoints (only a hashed key name is returned). This is deliberate.
+are masked on every read and a virtual key's raw `key` value is never echoed.
+This is deliberate, so `litellm-as-code` has **no local state file**:
 
-So — exactly like Terraform's `.tfstate` — `litellm-as-code` keeps a local
-applied-state file. The **live API** decides drift for comparable fields; the
-**state file** decides whether a secret was already sent, so existing keys are
-never rotated and credentials aren't re-sent on every run.
+- **Keys**: the spec's `key` is sent exactly once, on create (`/key/generate`),
+  if present; otherwise LiteLLM mints one. Updates only touch non-secret fields
+  and never re-send `key`, so existing keys are **never rotated**.
+- **Credentials**: `credential_values` are sent on create and re-asserted only
+  when a comparable (`credential_info` / `model_id`) change already triggered a
+  PATCH. PATCH is idempotent and does not rotate.
 
-Implications:
-
-- Keep `state.json` private (`chmod 600`, gitignored here, on a persistent
-  volume in Docker).
-- If a secret is rotated out-of-band in the proxy, the state file won't notice
-  (same documented limitation as Terraform's state). Delete the relevant entry
-  in `state.json` to force re-apply.
-- Losing the state file means keys/credentials get recreated on the next apply.
+Because secrets are not diffed against live, a secret rotated out-of-band in the
+proxy is invisible to the tool (same documented limitation as Terraform, without
+the state file): change the value in the spec and delete/recreate the resource
+to force a new secret.
 
 ## How it works
 
 ```
-spec.yml ──diff──▶ live API + state.json ──apply──▶ converge
+spec.yml ──diff──▶ live API ──apply──▶ converge
 ```
 
 Order is fixed: `users → teams → team members → keys → credentials → models`

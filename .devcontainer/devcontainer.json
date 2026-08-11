@@ -24,10 +24,6 @@
       ]
     }
   },
-  "postCreateCommand": "uv sync --dev",
-  "remoteUser": "vscode",
-  "mounts": [
-    // state.json holds applied-key/credential secrets; keep it container-local
-    "source=litellm-ascode-state,target=/workspaces/state,type=volume"
-  ]
+  "postCreateCommand": "uv sync --extra dev",
+  "remoteUser": "vscode"
 }

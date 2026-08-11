@@ -1,4 +1,4 @@
-"""The reconciler: spec + state + live API -> plan -> (apply)."""
+"""The reconciler: spec + live API -> plan -> (apply)."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from .resources import (
     reconcile_users,
 )
 from .spec import load_spec
-from .state import State, StateStore
 from .types import Plan
 
 
@@ -32,7 +31,6 @@ def _render_plan(plan: Plan) -> None:
 def reconcile(
     spec_path: str,
     client: LiteLLMClient,
-    state: State,
     *,
     dry_run: bool = False,
     prune: bool = False,
@@ -61,12 +59,10 @@ def reconcile(
     )
 
     banner("Virtual keys")
-    extend(reconcile_keys(client, spec.get("virtual_keys", []), state, dry_run=dry_run))
+    extend(reconcile_keys(client, spec.get("virtual_keys", []), dry_run=dry_run))
 
     banner("Credentials")
-    extend(
-        reconcile_credentials(client, spec.get("credentials", []), state, dry_run=dry_run)
-    )
+    extend(reconcile_credentials(client, spec.get("credentials", []), dry_run=dry_run))
 
     banner("Models")
     extend(reconcile_models(client, spec.get("models", []), dry_run=dry_run))
@@ -79,26 +75,16 @@ def run(
     *,
     base_url: str,
     api_key: str,
-    state_path: str,
     dry_run: bool = False,
     prune: bool = False,
 ) -> int:
-    info("litellm-as-code", f"target={base_url} spec={spec_path} state={state_path}")
+    info("litellm-as-code", f"target={base_url} spec={spec_path}")
     if dry_run:
         info("litellm-as-code", "DRY-RUN — no changes will be applied")
 
     client = LiteLLMClient(base_url, api_key)
-    store = StateStore(state_path)
-    state = store.load()
-
-    plan = reconcile(
-        spec_path, client, state, dry_run=dry_run, prune=prune
-    )
+    plan = reconcile(spec_path, client, dry_run=dry_run, prune=prune)
     _render_plan(plan)
-
-    if not dry_run:
-        store.save(state)
-        info("litellm-as-code", f"state written to {state_path}")
 
     # exit code semantics like terraform plan/apply diff detection:
     # 0 = no diff / applied cleanly, 2 = plan shows changes (dry-run only)
