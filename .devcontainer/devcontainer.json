@@ -2,8 +2,7 @@
   "name": "litellm-as-code",
   "image": "mcr.microsoft.com/devcontainers/python:3.12",
   "features": {
-    // uv for dependency management + running tests/pyproject
-    "ghcr.io/astral-sh/uv:0.9": {}
+    "ghcr.io/devcontainers-extra/features/uv:1": {}
   },
   "customizations": {
     "vscode": {

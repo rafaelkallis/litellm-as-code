@@ -57,6 +57,8 @@ def reconcile_keys(
             payload = dict(entry)
             payload.pop("key", None)  # don't rotate
             client.update_key(payload)
+            # The API never echoes the raw key, so only fill in a blank entry if
+            # one is somehow missing from state (should not happen after a create).
             state.keys.setdefault(alias, {"key": existing.get("key", "")})
 
     return diffs

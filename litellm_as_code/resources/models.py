@@ -98,6 +98,7 @@ def reconcile_models(
             Diff("model", name, Action.UPDATE if changes else Action.NOOP, changes)
         )
         if changes and not dry_run:
-            client.patch_model(remote_id := _resolve_model_id(remote) or "", entry)
+            model_id = _resolve_model_id(remote) or ""
+            client.patch_model(model_id, entry)
 
     return diffs

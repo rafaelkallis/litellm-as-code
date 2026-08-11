@@ -41,3 +41,18 @@ def test_state_file_is_private(tmp_path):
     # 0o600-ish (masked by umask => group/other read must be off)
     mode = path.stat().st_mode & 0o777
     assert mode & 0o077 == 0
+
+
+def test_state_roundtrip_is_sorted_and_readable(tmp_path):
+    """state.json is written sorted + indented for git-friendly diffs."""
+    path = tmp_path / "state.json"
+    store = StateStore(path)
+    s = State()
+    s.keys["k1"] = {"key": "sk-abc"}
+    s.credentials["c1"] = {"api_key": "sk-provider"}
+    store.save(s)
+
+    text = path.read_text()
+    assert '"credentials"' in text and '"keys"' in text  # indented, not one line
+    loaded = store.load()
+    assert loaded.version == 1

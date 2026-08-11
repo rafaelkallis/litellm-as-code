@@ -62,6 +62,10 @@ def reconcile_teams(
                     payload["team_id"] = team_id
                 client.create_team(payload)
                 live = client.list_teams()  # refresh so member reconcile finds it
+                # Carry the remote team_id forward so member reconcile can attach
+                # to it without a second lookup.
+                remote_team_id = _remote_team_id_from_live(live, entry)
+                reconciled.append(dict(entry, _remote_team_id=remote_team_id))
             else:
                 # pretend-created: members can't be resolved in dry-run, skip members
                 diffs.append(
@@ -72,27 +76,36 @@ def reconcile_teams(
                         message="members (team will be created)",
                     )
                 )
-                continue
-        else:
-            changes = comparable_diff(entry, existing, COMPARABLE)
-            diffs.append(
-                Diff("team", display, Action.UPDATE if changes else Action.NOOP, changes)
-            )
-            if changes and not dry_run:
-                client.update_team(entry)
+            continue
 
-        reconciled.append(dict(entry, _remote_team_id=existing_team_id(existing, client, live) if existing is None else existing.get("team_id")))
+        changes = comparable_diff(entry, existing, COMPARABLE)
+        diffs.append(
+            Diff("team", display, Action.UPDATE if changes else Action.NOOP, changes)
+        )
+        if changes and not dry_run:
+            client.update_team(entry)
+
+        reconciled.append(dict(entry, _remote_team_id=existing["team_id"]))
 
     return diffs, reconciled
 
 
-def existing_team_id(existing: dict[str, Any] | None, client: LiteLLMClient, live: list[dict[str, Any]]) -> str:
-    # find the remote team_id for the just-created/updated team
-    alias = (existing or {}).get("team_alias")
+def _remote_team_id_from_live(live: list[dict[str, Any]], entry: dict[str, Any]) -> str:
+    """Find the remote team_id for a just-created team in the refreshed listing.
+
+    Uses the same identity rule as `_find_remote`: prefer a fixed `team_id`,
+    fall back to `team_alias`. Returns "" if it can't be located.
+    """
+    team_id = entry.get("team_id")
+    alias = entry.get("team_alias")
     for t in live:
-        if t.get("team_alias") == alias:
+        if team_id and t.get("team_id") == team_id:
             return t["team_id"]
-    return (existing or {}).get("team_id") or ""
+    if alias:
+        for t in live:
+            if t.get("team_alias") == alias:
+                return t["team_id"]
+    return ""
 
 
 def reconcile_team_members(

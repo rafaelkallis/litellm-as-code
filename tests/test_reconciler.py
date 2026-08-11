@@ -172,3 +172,50 @@ def test_credential_secret_drift_triggers_patch(ctx, tmp_path):
     updates = [d for d in plan.diffs if d.action is Action.UPDATE]
     assert any(d.name == "c1" for d in updates)
     assert store.load().credentials["c1"]["api_key"] == "sk-rotated"
+
+
+def test_team_member_role_update_and_removal(ctx, tmp_path):
+    client, fake, store = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(json.dumps(SPEC))
+    state = store.load()
+    reconcile(str(spec), client, state, dry_run=False)
+
+    # change u2's role and drop u1 from the team
+    changed = json.loads(spec.read_text())
+    changed["teams"][0]["members_with_roles"] = [
+        {"user_id": "u2", "role": "admin"},
+    ]
+    spec.write_text(json.dumps(changed))
+
+    plan = reconcile(str(spec), client, state, dry_run=False)
+    updates = {d.name: d for d in plan.diffs if d.action is Action.UPDATE}
+
+    # role update for u2 within the team
+    assert "prod/u2" in updates
+    assert updates["prod/u2"].changes["role"] == ("user", "admin")
+    # removal of u1 emits an UPDATE diff (member deleted)
+    assert "prod/u1" in updates
+
+    assert fake.team_members[("team-prod", "u2")] == "admin"
+    assert ("team-prod", "u1") not in fake.team_members
+
+
+def test_model_cost_is_stable_across_reconciles(ctx, tmp_path):
+    """Per-million cost in the spec must map onto the per-token cost the fake
+    proxy stores — and back — so a second run is a no-op (no perpetual drift)."""
+    client, fake, store = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(json.dumps(SPEC))
+    state = store.load()
+
+    plan1 = reconcile(str(spec), client, state, dry_run=False)
+    assert any(d.name == "org/chat" and d.action is Action.CREATE for d in plan1.diffs)
+
+    plan2 = reconcile(str(spec), client, state, dry_run=False)
+    model_diffs = [d for d in plan2.diffs if d.resource_type == "model"]
+    assert all(d.action is Action.NOOP for d in model_diffs)
+
+    # the fake stored cost per-token, exactly like the real proxy
+    lp = fake.models["org/chat"]["litellm_params"]
+    assert lp["input_cost_per_token"] == 3.0 / 1_000_000.0

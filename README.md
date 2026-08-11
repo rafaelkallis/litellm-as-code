@@ -192,10 +192,16 @@ Data-source lookups (single object by ID) are a candidate future addition.
 
 ## Development
 
+The repo is managed with [uv](https://docs.astral.sh/uv/): the checked-in
+`uv.lock` pins the dev environment, and the working `.venv` is uv-created
+(so it intentionally has no `pip`). Use `uv` to install and run, not `pip`:
+
 ```bash
-pip install -e ".[dev]"
-pytest
+uv sync --extra dev      # create/refresh .venv with pytest + pytest-mock
+uv run pytest            # or: .venv/bin/python -m pytest
 ```
+
+If you don't want uv, `pip install -e ".[dev]"` into your own venv also works.
 
 Tests are mock-only (in-memory fake proxy) and mirror the package layout, per
 the LiteLLM-ecosystem convention. See `AGENTS.md` for the full contributor
