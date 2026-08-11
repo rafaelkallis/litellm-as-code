@@ -34,6 +34,19 @@ COMPARABLE = [
     "guardrails_remove",
 ]
 
+# The live API always echoes list-shaped fields as (possibly empty) arrays,
+# even when the spec omits them. Normalize both sides so an omitted spec field
+# means "empty list" instead of flagging perpetual drift.
+_LIST_DEFAULTS = {"guardrails_add": [], "guardrails_remove": []}
+
+
+def _normalize(d: dict[str, Any]) -> dict[str, Any]:
+    d = dict(d)
+    for field, default in _LIST_DEFAULTS.items():
+        if d.get(field) is None:
+            d[field] = default
+    return d
+
 
 def reconcile_policies(
     client: LiteLLMClient,
@@ -63,7 +76,7 @@ def reconcile_policies(
             continue
 
         policy_id = existing.get("policy_id")
-        changes = comparable_diff(entry, existing, COMPARABLE)
+        changes = comparable_diff(_normalize(entry), _normalize(existing), COMPARABLE)
         diffs.append(
             Diff("policy", name, Action.UPDATE if changes else Action.NOOP, changes)
         )

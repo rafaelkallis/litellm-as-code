@@ -1,7 +1,8 @@
 # litellm-as-code — example declarative spec.
 #
 # This is the source of truth for the RUNTIME state of a LiteLLM proxy:
-# users, teams, team members, virtual keys, credentials, models.
+# budgets, organizations, users, teams, team members, virtual keys,
+# credentials, models, guardrails, policies.
 #
 # Scope: this file does NOT manage the proxy's startup `config.yaml`
 # (general_settings / litellm_settings / router_settings). Those are
@@ -16,6 +17,27 @@ config:
   litellm_settings:
     num_retries: 0
     drop_params: true
+
+budgets:
+  - budget_id: "platform-budget"
+    max_budget: 100.0
+    budget_duration: "30d"
+
+  - budget_id: "service-budget"
+    max_budget: 25.0
+    soft_budget: 20.0
+    tpm_limit: 100000
+    rpm_limit: 1000
+    budget_duration: "30d"
+
+organizations:
+  - organization_id: "org-acme"
+    organization_alias: "acme"
+    members_with_roles:
+      - user_id: "username-admin"
+        role: "org_admin"
+      - user_id: "username-service"
+        role: "internal_user"
 
 users:
   - user_id: "username-admin"
@@ -77,3 +99,28 @@ models:
     litellm_params:
       model: "huggingface/some-embedding-model"
       litellm_credential_name: "my-vllm 8000"
+
+guardrails:
+  - guardrail_name: "pii-guard"
+    litellm_params:
+      guardrail: "presidio"
+      mode: "pre_call"
+    guardrail_info:
+      description: "PII masking for outbound requests"
+
+  - guardrail_name: "toxicity-filter"
+    litellm_params:
+      guardrail: "lakera"
+      mode: "pre_call"
+    guardrail_info:
+      description: "Block toxic prompts"
+
+policies:
+  - policy_name: "global-baseline"
+    description: "Base guardrails for all requests"
+    guardrails_add: ["pii-guard"]
+
+  - policy_name: "strict-safety"
+    inherit: "global-baseline"
+    description: "Extra safety for sensitive traffic"
+    guardrails_add: ["toxicity-filter"]

@@ -96,8 +96,13 @@ def reconcile_org_members(
 
     Mirrors team members: adds members missing from the spec, updates roles,
     removes members not in the spec.
+
+    Members are read from `/organization/list` (the API includes each org's
+    `members`), so no per-org info round-trip is needed.
     """
     diffs: list[Diff] = []
+    live_by_id = {o.get("organization_id"): o for o in client.list_organizations()}
+
     for org in org_specs:
         want = org.get("members_with_roles", [])
         org_id = org.get("_remote_org_id") or org.get("organization_id")
@@ -105,34 +110,34 @@ def reconcile_org_members(
         if not org_id:
             continue
 
-        live_org = _organization_info(client, org_id)
-        live_members = live_org.get("members", [])
+        live_org = live_by_id.get(org_id, {})
+        live_members = live_org.get("members", []) or []
 
         want_by_id = {m["user_id"]: m.get("role") for m in want if m.get("user_id")}
-        live_by_id = {
+        live_by_user = {
             m.get("user_id"): m.get("user_role") for m in live_members if m.get("user_id")
         }
 
         for uid, role in want_by_id.items():
-            if uid not in live_by_id:
+            if uid not in live_by_user:
                 diffs.append(Diff("organization_member", f"{display}/{uid}", Action.CREATE))
                 if not dry_run:
                     client.add_organization_members(
                         org_id, [{"user_id": uid, "role": role}]
                     )
-            elif live_by_id[uid] != role:
+            elif live_by_user[uid] != role:
                 diffs.append(
                     Diff(
                         "organization_member",
                         f"{display}/{uid}",
                         Action.UPDATE,
-                        {"role": (live_by_id[uid], role)},
+                        {"role": (live_by_user[uid], role)},
                     )
                 )
                 if not dry_run:
                     client.update_organization_member(org_id, uid, role=role)
 
-        for uid in live_by_id:
+        for uid in live_by_user:
             if uid not in want_by_id:
                 diffs.append(
                     Diff("organization_member", f"{display}/{uid}", Action.UPDATE, {})
@@ -170,12 +175,3 @@ def _remote_org_id_from_live(
             if o.get("organization_alias") == alias:
                 return o["organization_id"]
     return org_id or ""
-
-
-def _organization_info(client: LiteLLMClient, org_id: str) -> dict[str, Any]:
-    payload = client._request(
-        "GET", "/organization/info", params={"organization_id": org_id}
-    )
-    if isinstance(payload, list):
-        return payload[0] if payload else {}
-    return payload

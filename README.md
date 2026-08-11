@@ -25,16 +25,23 @@ Key properties:
 
 | Spec section | Managed resource |
 |---|---|
+| `budgets` | `/budget/*` |
+| `organizations` (+ `members_with_roles`) | `/organization/*`, `/organization/member_*` |
 | `users` | `/user/*` |
 | `teams` + `members_with_roles` | `/team/*`, `/team/member_*` |
 | `virtual_keys` | `/key/*` |
 | `credentials` | `/credentials*` |
 | `models` | `/model/*` |
+| `guardrails` | `/guardrails*` |
+| `policies` | `/policies*` |
 
 Out of scope (startup-only, applied at proxy boot, **not** directly
 reconciliable over the admin API): `general_settings`, `litellm_settings`,
 `router_settings` from the proxy's `config.yaml`. A `config:` section in the
-spec is accepted for reference and ignored.
+spec is accepted for reference and ignored. The same applies to profile
+sections that only exist in `config.yaml` (e.g. guardrails/policies defined
+there); the reconciler only touches DB-backed rows and never deletes
+config-file-only entries.
 
 ## Requirements
 
@@ -77,6 +84,18 @@ for what exists and what drifted.
 See [`examples/spec.yml`](examples/spec.yml) for the full shape. Bare sketch:
 
 ```yaml
+budgets:
+  - budget_id: "platform-budget"
+    max_budget: 100.0
+    budget_duration: "30d"
+
+organizations:
+  - organization_id: "org-acme"
+    organization_alias: "acme"
+    members_with_roles:
+      - user_id: "username-admin"
+        role: "org_admin"
+
 users:
   - user_id: "username-admin"
     user_alias: "admin"
@@ -112,6 +131,19 @@ models:
     litellm_params:
       model: "hosted_vllm/some-chat-model"
       litellm_credential_name: "my-vllm"
+
+guardrails:
+  - guardrail_name: "pii-guard"
+    litellm_params:
+      guardrail: "presidio"
+      mode: "pre_call"
+    guardrail_info:
+      description: "PII masking"
+
+policies:
+  - policy_name: "global-baseline"
+    description: "Base guardrails for all requests"
+    guardrails_add: ["pii-guard"]
 ```
 
 ## CLI

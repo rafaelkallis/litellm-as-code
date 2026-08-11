@@ -24,6 +24,13 @@ class FakeLiteLLM:
         self.credentials: dict[str, dict[str, Any]] = {}  # name -> cred obj
         self._stored_credential_values: dict[str, dict[str, Any]] = {}  # name -> values
         self.models: dict[str, dict[str, Any]] = {}  # model_name -> model obj
+        self.budgets: dict[str, dict[str, Any]] = {}  # budget_id -> budget obj
+        self.organizations: dict[str, dict[str, Any]] = {}  # org_id -> org obj
+        self.org_members: dict[str, dict[str, str]] = {}  # (org_id,user_id)->role
+        self.guardrails: dict[str, dict[str, Any]] = {}  # name -> guardrail obj
+        self.guardrail_ids: dict[str, str] = {}  # name -> guardrail_id
+        self.policies: dict[str, dict[str, Any]] = {}  # name -> policy obj
+        self.policy_ids: dict[str, str] = {}  # name -> policy_id
 
     # -- wire up to LiteLLMClient via monkeypatched session --
     def attach(self, client: LiteLLMClient) -> None:
@@ -52,6 +59,29 @@ class FakeLiteLLM:
         client.list_models = lambda: list(self.models.values())  # type: ignore[method-assign]
         client.create_model = self._create_model  # type: ignore[method-assign]
         client.patch_model = self._patch_model  # type: ignore[method-assign]
+
+        client.list_budgets = lambda: list(self.budgets.values())  # type: ignore[method-assign]
+        client.create_budget = self._create_budget  # type: ignore[method-assign]
+        client.update_budget = self._update_budget  # type: ignore[method-assign]
+        client.delete_budget = self._delete_budget  # type: ignore[method-assign]
+
+        client.list_organizations = lambda: self._organization_list()  # type: ignore[method-assign]
+        client.create_organization = self._create_organization  # type: ignore[method-assign]
+        client.update_organization = self._update_organization  # type: ignore[method-assign]
+        client.delete_organization = self._delete_organization  # type: ignore[method-assign]
+        client.add_organization_members = self._add_org_members  # type: ignore[method-assign]
+        client.update_organization_member = self._update_org_member  # type: ignore[method-assign]
+        client.delete_organization_member = self._delete_org_member  # type: ignore[method-assign]
+
+        client.list_guardrails = lambda: self._list_guardrails()  # type: ignore[method-assign]
+        client.create_guardrail = self._create_guardrail  # type: ignore[method-assign]
+        client.update_guardrail = self._update_guardrail  # type: ignore[method-assign]
+        client.delete_guardrail = self._delete_guardrail  # type: ignore[method-assign]
+
+        client.list_policies = lambda: self._list_policies()  # type: ignore[method-assign]
+        client.create_policy = self._create_policy  # type: ignore[method-assign]
+        client.update_policy = self._update_policy  # type: ignore[method-assign]
+        client.delete_policy = self._delete_policy  # type: ignore[method-assign]
 
     # -- users --------------------------------------------------------------
     def _create_user(self, payload):  # type: ignore[no-untyped-def]
@@ -166,6 +196,167 @@ class FakeLiteLLM:
                 v = mi.pop(key)
                 lp[f"{key.replace('_per_million_tokens', '')}_per_token"] = v / 1_000_000.0
         return p
+
+    # -- budgets ------------------------------------------------------------
+    def _create_budget(self, payload):  # type: ignore[no-untyped-def]
+        budget_id = payload["budget_id"]
+        obj = dict(payload)
+        obj["budget_reset_at"] = "2026-09-01T00:00:00Z" if payload.get("budget_duration") else None
+        self.budgets[budget_id] = obj
+        return {"budget_id": budget_id}
+
+    def _update_budget(self, payload):  # type: ignore[no-untyped-def]
+        budget_id = payload["budget_id"]
+        if budget_id in self.budgets:
+            self.budgets[budget_id].update(payload)
+            # server recomputes reset_at whenever duration changes
+            self.budgets[budget_id]["budget_reset_at"] = (
+                "2026-09-01T00:00:00Z" if payload.get("budget_duration") else None
+            )
+        return {}
+
+    def _delete_budget(self, budget_id):  # type: ignore[no-untyped-def]
+        self.budgets.pop(budget_id, None)
+        return {}
+
+    # -- organizations ------------------------------------------------------
+    def _create_organization(self, payload):  # type: ignore[no-untyped-def]
+        org_id = payload.get("organization_id") or f"org-{len(self.organizations)}"
+        obj = {k: v for k, v in payload.items() if k != "members_with_roles"}
+        obj["organization_id"] = org_id
+        obj["members"] = []
+        self.organizations[org_id] = obj
+        return {"organization_id": org_id}
+
+    def _organization_list(self):  # type: ignore[no-untyped-def]
+        out = []
+        for org_id, org in self.organizations.items():
+            entry = dict(org)
+            entry["members"] = [
+                {"user_id": uid, "user_role": role}
+                for (oid, uid), role in self.org_members.items()
+                if oid == org_id
+            ]
+            out.append(entry)
+        return out
+
+    def _update_organization(self, payload):  # type: ignore[no-untyped-def]
+        org_id = payload.get("organization_id")
+        if org_id and org_id in self.organizations:
+            self.organizations[org_id].update(payload)
+        else:
+            for o in self.organizations.values():
+                if o.get("organization_alias") == payload.get("organization_alias"):
+                    o.update(payload)
+                    return {}
+        return {}
+
+    def _delete_organization(self, org_id):  # type: ignore[no-untyped-def]
+        self.organizations.pop(org_id, None)
+        for k in [key for key in self.org_members if key[0] == org_id]:
+            del self.org_members[k]
+        return {}
+
+    def _add_org_members(self, org_id, members):  # type: ignore[no-untyped-def]
+        for m in members:
+            self.org_members[(org_id, m["user_id"])] = m["role"]
+        return {}
+
+    def _update_org_member(self, org_id, user_id, role=None):  # type: ignore[no-untyped-def]
+        if (org_id, user_id) in self.org_members and role is not None:
+            self.org_members[(org_id, user_id)] = role
+        return {}
+
+    def _delete_org_member(self, org_id, user_id):  # type: ignore[no-untyped-def]
+        self.org_members.pop((org_id, user_id), None)
+        return {}
+
+    # -- guardrails ----------------------------------------------------------
+    def _list_guardrails(self):  # type: ignore[no-untyped-def]
+        return [
+            {
+                "guardrail_id": self.guardrail_ids.get(name),
+                "guardrail_name": name,
+                "litellm_params": dict(g.get("litellm_params", {})),
+                "guardrail_info": g.get("guardrail_info"),
+            }
+            for name, g in self.guardrails.items()
+        ]
+
+    def _create_guardrail(self, payload):  # type: ignore[no-untyped-def]
+        name = payload["guardrail_name"]
+        gid = f"gr-{len(self.guardrail_ids)}"
+        self.guardrails[name] = dict(payload)
+        self.guardrail_ids[name] = gid
+        return {"guardrail_id": gid}
+
+    def _update_guardrail(self, guardrail_id, payload):  # type: ignore[no-untyped-def]
+        for name, gid in self.guardrail_ids.items():
+            if gid == guardrail_id:
+                # rename updates the name key too
+                new_name = payload.get("guardrail_name", name)
+                if new_name != name:
+                    self.guardrails.pop(name)
+                    self.guardrail_ids.pop(name)
+                    self.guardrails[new_name] = dict(payload)
+                    self.guardrail_ids[new_name] = gid
+                else:
+                    self.guardrails[name].update(payload)
+                return {}
+        return {}
+
+    def _delete_guardrail(self, guardrail_id):  # type: ignore[no-untyped-def]
+        for name, gid in list(self.guardrail_ids.items()):
+            if gid == guardrail_id:
+                self.guardrails.pop(name, None)
+                self.guardrail_ids.pop(name, None)
+                return {}
+        return {}
+
+    # -- policies -----------------------------------------------------------
+    def _list_policies(self):  # type: ignore[no-untyped-def]
+        return [
+            {
+                "policy_id": self.policy_ids.get(name),
+                "policy_name": name,
+                "version_status": "production",
+                "inherit": p.get("inherit"),
+                "description": p.get("description"),
+                "guardrails_add": p.get("guardrails_add", []),
+                "guardrails_remove": p.get("guardrails_remove", []),
+                "definition_location": "db",
+            }
+            for name, p in self.policies.items()
+        ]
+
+    def _create_policy(self, payload):  # type: ignore[no-untyped-def]
+        name = payload["policy_name"]
+        pid = f"pol-{len(self.policy_ids)}"
+        self.policies[name] = dict(payload)
+        self.policy_ids[name] = pid
+        return {"policy_id": pid, "policy_name": name}
+
+    def _update_policy(self, policy_id, payload):  # type: ignore[no-untyped-def]
+        for name, pid in self.policy_ids.items():
+            if pid == policy_id:
+                new_name = payload.get("policy_name", name)
+                if new_name != name:
+                    self.policies.pop(name)
+                    self.policy_ids.pop(name)
+                    self.policies[new_name] = dict(payload)
+                    self.policy_ids[new_name] = pid
+                else:
+                    self.policies[name].update(payload)
+                return {}
+        return {}
+
+    def _delete_policy(self, policy_id):  # type: ignore[no-untyped-def]
+        for name, pid in list(self.policy_ids.items()):
+            if pid == policy_id:
+                self.policies.pop(name, None)
+                self.policy_ids.pop(name, None)
+                return {}
+        return {}
 
 
 

@@ -49,6 +49,35 @@ SPEC = {
     ],
 }
 
+# Full-surface spec: exercises every reconcilable section at once.
+FULL_SPEC = {
+    **SPEC,
+    "budgets": [
+        {"budget_id": "b1", "max_budget": 100.0, "budget_duration": "30d"},
+    ],
+    "organizations": [
+        {
+            "organization_id": "org-1",
+            "organization_alias": "acme",
+            "members_with_roles": [
+                {"user_id": "u1", "role": "org_admin"},
+            ],
+        }
+    ],
+    "guardrails": [
+        {
+            "guardrail_name": "pii-guard",
+            "litellm_params": {"guardrail": "presidio", "mode": "pre_call"},
+        }
+    ],
+    "policies": [
+        {
+            "policy_name": "global-baseline",
+            "guardrails_add": ["pii-guard"],
+        }
+    ],
+}
+
 
 @pytest.fixture
 def ctx():
@@ -200,3 +229,37 @@ def test_model_cost_is_stable_across_reconciles(ctx, tmp_path):
     # the fake stored cost per-token, exactly like the real proxy
     lp = fake.models["org/chat"]["litellm_params"]
     assert lp["input_cost_per_token"] == 3.0 / 1_000_000.0
+
+
+def test_full_surface_first_run_creates_everything(ctx, tmp_path):
+    """All reconcilable sections create their resources on the first run:
+    2 users + team + 2 members + key + cred + model + budget + org + 1 org
+    member + guardrail + policy."""
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(json.dumps(FULL_SPEC))
+
+    plan = reconcile(str(spec), client, dry_run=False)
+
+    assert plan.create_count == 13
+    assert plan.update_count == 0
+    assert fake.budgets["b1"]["max_budget"] == 100.0
+    assert fake.org_members[("org-1", "u1")] == "org_admin"
+    assert "pii-guard" in fake.guardrails
+    assert "global-baseline" in fake.policies
+
+
+def test_full_surface_second_run_is_noop(ctx, tmp_path):
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(json.dumps(FULL_SPEC))
+
+    reconcile(str(spec), client, dry_run=False)
+    plan = reconcile(str(spec), client, dry_run=False)
+
+    # every new resource type converges to no-op on the second run
+    for rtype in ("budget", "organization", "guardrail", "policy"):
+        diffs = [d for d in plan.diffs if d.resource_type == rtype]
+        assert all(d.action is Action.NOOP for d in diffs), rtype
+    assert plan.create_count == 0
+    assert plan.update_count == 0
