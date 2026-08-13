@@ -167,7 +167,15 @@ class LiteLLMClient:
 
     # -- models -------------------------------------------------------------
     def list_models(self) -> list[dict[str, Any]]:
-        return self._request("GET", "/model/info").get("data", [])
+        # A fresh proxy with an empty DB returns 500 "LLM Model List not loaded
+        # in..." from /model/info (instead of an empty list). Treat that as no
+        # models so a brand-new proxy reconciles cleanly.
+        try:
+            return self._request("GET", "/model/info").get("data", [])
+        except ReconcilerError as e:
+            if "LLM Model List not loaded" in str(e):
+                return []
+            raise
 
     def create_model(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/model/new", json=payload)

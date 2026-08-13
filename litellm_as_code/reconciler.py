@@ -42,9 +42,11 @@ def reconcile(
 ) -> Plan:
     """Run the convergence loop: spec diff -> apply (unless dry-run).
 
-    Ordering is fixed: budgets -> organizations -> org members -> users ->
-    teams -> team members -> keys -> credentials -> models -> guardrails ->
-    policies. This is acyclic for a single proxy, so no graph solver is needed.
+    Ordering is fixed: budgets -> models -> credentials -> organizations ->
+    org members -> users -> teams -> team members -> keys -> guardrails ->
+    policies. Models/credentials come before organizations because LiteLLM
+    requires at least one model to be configured before it lets you create an
+    organization on a fresh proxy. Acyclic & single-target.
     """
     spec = load_spec(spec_path)
     plan = Plan()
@@ -54,6 +56,12 @@ def reconcile(
 
     banner("Budgets")
     extend(reconcile_budgets(client, spec.get("budgets", []), dry_run=dry_run))
+
+    banner("Credentials")
+    extend(reconcile_credentials(client, spec.get("credentials", []), dry_run=dry_run))
+
+    banner("Models")
+    extend(reconcile_models(client, spec.get("models", []), dry_run=dry_run))
 
     banner("Organizations")
     org_diffs, org_specs = reconcile_organizations(
@@ -76,12 +84,6 @@ def reconcile(
 
     banner("Virtual keys")
     extend(reconcile_keys(client, spec.get("virtual_keys", []), dry_run=dry_run))
-
-    banner("Credentials")
-    extend(reconcile_credentials(client, spec.get("credentials", []), dry_run=dry_run))
-
-    banner("Models")
-    extend(reconcile_models(client, spec.get("models", []), dry_run=dry_run))
 
     banner("Guardrails")
     extend(reconcile_guardrails(client, spec.get("guardrails", []), dry_run=dry_run))

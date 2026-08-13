@@ -263,3 +263,34 @@ def test_full_surface_second_run_is_noop(ctx, tmp_path):
         assert all(d.action is Action.NOOP for d in diffs), rtype
     assert plan.create_count == 0
     assert plan.update_count == 0
+
+
+def test_list_models_empty_db_five_hundred_becomes_empty_list():
+    """A fresh proxy with an empty DB makes /model/info return 500
+    "LLM Model List not loaded in..." instead of []. list_models() should
+    treat that as no models so a brand-new proxy reconciles cleanly."""
+    from litellm_as_code.api import LiteLLMClient, ReconcilerError
+
+    client = LiteLLMClient("http://fake:4000", "test-admin-key")
+    # _request already converts the HTTP 500 into a ReconcilerError with the
+    # proxy's error text inline; list_models() gets that message.
+    error_message = (
+        "GET /model/info failed: 500 Server Error: Internal Server Error for "
+        "url: http://litellm:4000/model/info {\"detail\":{\"error\":\"LLM Model "
+        "List not loaded in. Make sure you passed models in your config.yaml or "
+        "on the LiteLLM Admin UI. - https://docs.litellm.ai/docs/proxy/configs\"}}"
+    )
+
+    def _empty_db_error(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise ReconcilerError(error_message)
+
+    client._request = _empty_db_error  # type: ignore[method-assign]
+    assert client.list_models() == []
+
+    # sanity: the underlying error surfaces for other responses
+    def _other_error(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise ReconcilerError("GET /model/info failed: boom")
+
+    client._request = _other_error  # type: ignore[method-assign]
+    with pytest.raises(ReconcilerError):
+        client.list_models()
