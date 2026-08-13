@@ -2,7 +2,10 @@
   "name": "litellm-as-code",
   "image": "mcr.microsoft.com/devcontainers/python:3.12",
   "features": {
-    "ghcr.io/devcontainers-extra/features/uv:1": {}
+    "ghcr.io/devcontainers-extra/features/uv:1": {},
+    "ghcr.io/devcontainers/features/docker-in-docker:4": {
+      "moby": false
+    }
   },
   "customizations": {
     "vscode": {
