@@ -1,0 +1,127 @@
+# litellm-as-code — Docker Compose example spec (RUNTIME state only).
+#
+# This is the declarative source of truth for the runtime state of the
+# LiteLLM proxy brought up by compose.yml in this directory. It covers all
+# nine reconcilable sections:
+#
+#   budgets -> organizations (+ members) -> users -> teams (+ members) ->
+#   virtual_keys -> credentials -> models -> guardrails -> policies
+#
+# The `config:` section below is accepted for reference but IGNORED by the
+# reconciler (startup-only settings are applied at proxy boot, see
+# config.yaml in this directory).
+#
+# The `local` model routes through LiteLLM to a local vLLM server that the
+# compose stack starts (the `vllm` service), serving TinyStories-1M — a tiny
+# GPT-Neo/GPT-2-class model. That means the whole stack converges without any
+# external model provider keys: vLLM is "a real inference server", just a very
+# small one.
+
+# Reference only — the reconciler does not read this section.
+config:
+  general_settings:
+    store_model_in_db: true
+  litellm_settings:
+    num_retries: 0
+    drop_params: true
+
+budgets:
+  - budget_id: "platform-budget"
+    max_budget: 100.0
+    budget_duration: "30d"
+
+  - budget_id: "service-budget"
+    max_budget: 25.0
+    soft_budget: 20.0
+    tpm_limit: 100000
+    rpm_limit: 1000
+    budget_duration: "30d"
+
+organizations:
+  - organization_id: "org-acme"
+    organization_alias: "acme"
+    members_with_roles:
+      - user_id: "username-admin"
+        role: "org_admin"
+      - user_id: "username-service"
+        role: "internal_user"
+
+users:
+  - user_id: "username-admin"
+    user_alias: "admin"
+    user_email: "admin@example.com"
+    user_role: "proxy_admin"
+    auto_create_key: "false"
+
+  - user_id: "username-service"
+    user_alias: "service"
+    user_role: "internal_user_viewer"
+    auto_create_key: "false"
+
+teams:
+  - team_id: "team-prod"
+    team_alias: "production"
+    members_with_roles:
+      - user_id: "username-admin"
+        role: "admin"
+      - user_id: "username-service"
+        role: "user"
+
+  - team_id: "team-guest"
+    team_alias: "guest"
+
+virtual_keys:
+  - key_alias: "admin-cli"
+    # Write-once: sent on create, never read back, never rotated on update.
+    # `key` is optional — omit it (or delete the line) and LiteLLM mints a key.
+    key: "sk-demo-admin-key-00000000000000000000"
+    user_id: "username-admin"
+
+  - key_alias: "service-readonly"
+    key: "sk-demo-service-key-11111111111111111111"
+    user_id: "username-service"
+
+credentials:
+  - credential_name: "tiny-vllm"
+    credential_info:
+      custom_llm_provider: "hosted_vllm"
+    credential_values:
+      api_base: "http://vllm:8000/v1"   # Docker-internal service name of the vllm service
+      api_key: "local-demo-key"          # vLLM ignores auth by default; placeholder
+
+models:
+  - model_name: "tiny-stories"
+    model_info:
+      id: "11111111-2222-3333-4444-555555555555"
+      mode: "text"                        # GPT-Neo/GPT-2-class base model, plain text completion
+      base_model: "roneneldan/TinyStories-1M"
+      input_cost_per_million_tokens: 0.0
+      output_cost_per_million_tokens: 0.0
+    litellm_params:
+      model: "hosted_vllm/roneneldan/TinyStories-1M"
+      litellm_credential_name: "tiny-vllm"
+
+guardrails:
+  - guardrail_name: "pii-guard"
+    litellm_params:
+      guardrail: "presidio"
+      mode: "pre_call"
+    guardrail_info:
+      description: "PII masking for outbound requests"
+
+  - guardrail_name: "toxicity-filter"
+    litellm_params:
+      guardrail: "lakera"
+      mode: "pre_call"
+    guardrail_info:
+      description: "Block toxic prompts"
+
+policies:
+  - policy_name: "global-baseline"
+    description: "Base guardrails for all requests"
+    guardrails_add: ["pii-guard"]
+
+  - policy_name: "strict-safety"
+    inherit: "global-baseline"
+    description: "Extra safety for sensitive traffic"
+    guardrails_add: ["toxicity-filter"]

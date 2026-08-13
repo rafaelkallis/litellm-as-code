@@ -1,0 +1,103 @@
+# litellm-as-code — Docker Compose example.
+#
+# A single `docker compose up --build` brings up a working LiteLLM stack:
+#
+#   litellm  -> ghcr.io/berriai/litellm-database    (admin REST API + proxy, port 4000)
+#   vllm     -> vllm/vllm-openai-cpu               (serves roneneldan/TinyStories-1M, port 8000)
+#   config   -> ghcr.io/rafaelkallis/litellm-as-code (one-shot reconciler)
+#
+# The `config` service is intentionally a *run-once* job: it boots after the
+# proxy is healthy, reconciles the spec against the live admin API, and exits.
+# Re-run it whenever you want to re-check/drift or plan changes:
+#
+#   docker compose up -d litellm vllm            # start the stack once
+#   docker compose run --rm config --dry-run     # plan (exit 2 if a diff exists)
+#   docker compose run --rm config               # apply / converge
+#
+# Secrets live in `LITELLM_MASTER_KEY` (proxy master key). To use a `.env`
+# file instead of editing this file, copy `.env.example` to `.env` and the
+# `${VAR:-...}` fallbacks below resolve from it.
+name: litellm-as-code-example
+
+services:
+  litellm:
+    image: ghcr.io/berriai/litellm-database:${LITELLM_VERSION:-latest}
+    container_name: litellm-as-code-litellm
+    ports:
+      - "${LITELLM_PORT:-4000}:4000"
+    environment:
+      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY in .env or the shell}"
+      LITELLM_SALT_KEY: "${LITELLM_SALT_KEY:-litellm-as-code-demo-salt}"
+      DATABASE_URL: "sqlite:////app/data/litellm.db"
+      STORE_MODEL_IN_DB: "True"
+      # The execution database stores users/teams/keys/credentials/models.
+      # Startup `config.yaml` settings (general_settings/litellm_settings/
+      # router_settings) are NOT reconcilable over the admin API; mount them
+      # at /app/config.yaml and the proxy uses them at boot.
+    volumes:
+      - litellm-data:/app/data
+      - ./config.yaml:/app/config.yaml:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health/liveliness"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  vllm:
+    # Local, "real" inference server so the demo converges without external
+    # model provider keys. TinyStories-1M (~3.7M params, GPT-Neo/GPT-2 arch)
+    # is tiny enough for CPU. If you have a GPU, swap the image/args to a
+    # CUDA image (e.g. vllm/vllm-openai) and drop the CPU-only flags.
+    image: vllm/vllm-openai-cpu:${VLLM_ARCH:-latest-x86_64}
+    container_name: litellm-as-code-vllm
+    command:
+      - --model=roneneldan/TinyStories-1M
+      - --host=0.0.0.0
+      - --port=8000
+      - --dtype=bfloat16
+      - --max-model-len=512
+      - --max-num-seqs=4
+      - --enforce-eager
+    ports:
+      - "${VLLM_PORT:-8000}:8000"
+    environment:
+      VLLM_CPU_KVCACHE_SPACE: "1"
+      # HF_TRANSFER and VLLM_CPU_OMP_THREADS_BIND are commented out as
+      # performance tuning knobs; defaults are fine for the demo.
+    # The CPU build needs these for NUMA/nice syscalls (see vLLM docs).
+    security_opt:
+      - seccomp=unconfined
+    cap_add:
+      - SYS_NICE
+    volumes:
+      - hf-cache:/root/.cache/huggingface   # download TinyStories once, reuse across restarts
+    healthcheck:
+      # OpenAI-compatible /v1/models endpoint is up once the engine is ready.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/v1/models"]
+      interval: 20s
+      timeout: 10s
+      retries: 30
+      start_period: 120s
+    restart: unless-stopped
+
+  config:
+    image: ghcr.io/rafaelkallis/litellm-as-code:${AS_CODE_VERSION:-latest}
+    container_name: litellm-as-code-config
+    # One-shot: reconcile the live proxy to match spec.yml, then exit.
+    command: ["spec.yml"]
+    environment:
+      LITELLM_BASE_URL: "http://litellm:4000"
+      LITELLM_API_KEY: "${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY in .env or the shell}"
+      LITELLM_SPEC: "/config/spec.yml"
+    volumes:
+      - ./spec.yml:/config/spec.yml:ro
+    depends_on:
+      litellm:
+        condition: service_healthy
+    # `restart: "no"` (default) - this is a run-once job, not a long running server.
+
+volumes:
+  litellm-data:
+  hf-cache:
