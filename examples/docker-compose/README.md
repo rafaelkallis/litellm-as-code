@@ -131,3 +131,20 @@ Things the reconciler deliberately does **not** manage:
   ```
 - If vLLM fails to download the weights (network), the `vllm` service will
   not become healthy and `config` will wait. Check `docker compose logs vllm`.
+
+## What was verified without Docker
+
+This repo's CI/dev environment is Docker-free, so the full stack was **not**
+booted here. What *is* verified, against the in-repo test harness:
+
+- `spec.yml` in this directory passes the project's own `load_spec` +
+  `validate_spec` (0 errors, 0 warnings).
+- Running the actual reconciler against the in-memory fake proxy: first run
+  creates all 9 sections, re-run is a **no-op** (idempotent, keys not
+  rotated), and `--dry-run` reports the creates without mutating.
+- The model is registered with the expected routing (credential `tiny-vllm`
+  → `http://vllm:8000/v1`, `model` = `hosted_vllm/roneneldan/TinyStories-1M`).
+
+To see the stack live, run `docker compose up` on a machine with Docker (you'll
+need network egress for first-time image pulls and the Hugging Face model
+download).
