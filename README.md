@@ -183,6 +183,34 @@ Or build from source with `docker build -t litellm-as-code .` and use
 The image defaults to `LITELLM_SPEC=/config/spec.yml` and runs as a non-root
 user. No secrets are persisted by the tool (the spec mounts its own credentials).
 
+### Docker Compose example (LiteLLM + litellm-as-code end-to-end)
+
+Want to see it all working together before wiring up a real proxy? There's a
+runnable example under [`examples/docker-compose/`](examples/docker-compose/)
+that starts a **complete self-hosted stack** with one `docker compose up`:
+
+- **`litellm`** — the proxy (`ghcr.io/berriai/litellm-database`, SQLite-backed,
+  DB-managed models);
+- **`vllm`** — a local, real OpenAI-compatible inference server
+  (`vllm/vllm-openai-cpu`) serving the tiny [`TinyStories-1M`](https://huggingface.co/roneneldan/TinyStories-1M)
+  model, so no GPU or external provider keys are needed;
+- **`config`** — the `litellm-as-code` reconciler as a run-once job that
+  converges [`spec.yml`](examples/docker-compose/spec.yml) against the live
+  admin API (and re-runs cleanly/idempotently).
+
+```bash
+cd examples/docker-compose
+cp .env.example .env        # set LITELLM_MASTER_KEY
+docker compose up -d litellm vllm            # start proxy + vLLM
+docker compose run --rm config --dry-run     # plan (exit 2 on diff)
+docker compose run --rm config               # apply
+curl -s http://localhost:4000/v1/models -H "Authorization: Bearer $LITELLM_MASTER_KEY"
+```
+
+See [`examples/docker-compose/README.md`](examples/docker-compose/README.md)
+for the full walkthrough (including an interactive `curl` through the proxy to
+the locally-served model).
+
 ## Secrets
 
 LiteLLM's admin API **never returns secret material back**: `credential_values`
