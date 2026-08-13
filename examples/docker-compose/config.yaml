@@ -9,22 +9,16 @@
 # Environment variables below (LITELLM_MASTER_KEY, DATABASE_URL,
 # STORE_MODEL_IN_DB) are set in compose.yml and read by the container.
 #
-# NOTE: `model_list` is intentionally empty. DB-backed models (created by
-# the reconciler from spec.yml) are loaded by the proxy from the database at
-# boot, so you don't need to duplicate them here. If you set `store_model_in_db`
-# true (as we do in compose.yml), models added via /model/new are available
-# without editing this file.
+# `model_list` is intentionally left empty. Models are DB-backed
+# (STORE_MODEL_IN_DB=True) and are created/managed by the reconciler from
+# spec.yml via the admin API — there is nothing to declare here at boot.
 
 general_settings:
-  # Optional: limit log verbosity. Not required.
-  # store_model_in_db is set via the STORE_MODEL_IN_DB env var in compose.yml.
-
   # The proxy binds on 0.0.0.0:4000 by default (see the litellm image CMD).
   # database_url is injected by compose.yml via DATABASE_URL.
   # master_key is injected via LITELLM_MASTER_KEY.
 
 litellm_settings:
-  # num_retries / drop_params are optional startup knobs; not required for the demo.
   num_retries: 0
   drop_params: true
 

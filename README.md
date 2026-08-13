@@ -187,23 +187,26 @@ user. No secrets are persisted by the tool (the spec mounts its own credentials)
 
 Want to see it all working together before wiring up a real proxy? There's a
 runnable example under [`examples/docker-compose/`](examples/docker-compose/)
-that starts a **complete self-hosted stack** with one `docker compose up`:
+that boots a LiteLLM proxy with `docker compose up` and configures its runtime
+state from a declarative spec. The proxy **upstreams to an externally hosted,
+OpenAI-compatible service** (hosted vLLM, an OpenAI-compatible gateway, etc.) —
+you only supply the base URL + API key; there's no model self-hosting here:
 
-- **`litellm`** — the proxy (`ghcr.io/berriai/litellm-database`, SQLite-backed,
-  DB-managed models);
-- **`vllm`** — a local, real OpenAI-compatible inference server
-  (`vllm/vllm-openai-cpu`) serving the tiny [`TinyStories-1M`](https://huggingface.co/roneneldan/TinyStories-1M)
-  model, so no GPU or external provider keys are needed;
+- **`postgres`** — the DB backing the proxy's runtime state (required by
+  LiteLLM's DB-backed features);
+- **`litellm`** — the proxy (`ghcr.io/berriai/litellm-database`,
+  Postgres-backed, DB-managed models);
 - **`config`** — the `litellm-as-code` reconciler as a run-once job that
-  converges [`spec.yml`](examples/docker-compose/spec.yml) against the live
+  registers the external model + resources from
+  [`spec.yml`](examples/docker-compose/spec.yml) against the live
   admin API (and re-runs cleanly/idempotently).
 
 ```bash
 cd examples/docker-compose
 cp .env.example .env        # set LITELLM_MASTER_KEY
-docker compose up -d litellm vllm            # start proxy + vLLM
-docker compose run --rm config --dry-run     # plan (exit 2 on diff)
-docker compose run --rm config               # apply
+docker compose up -d postgres litellm           # start DB + proxy
+docker compose run --rm config --dry-run        # plan (exit 2 on diff)
+docker compose run --rm config                  # apply (registers resources + model)
 curl -s http://localhost:4000/v1/models -H "Authorization: Bearer $LITELLM_MASTER_KEY"
 ```
 

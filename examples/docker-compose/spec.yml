@@ -11,11 +11,11 @@
 # reconciler (startup-only settings are applied at proxy boot, see
 # config.yaml in this directory).
 #
-# The `local` model routes through LiteLLM to a local vLLM server that the
-# compose stack starts (the `vllm` service), serving TinyStories-1M — a tiny
-# GPT-Neo/GPT-2-class model. That means the whole stack converges without any
-# external model provider keys: vLLM is "a real inference server", just a very
-# small one.
+# The model below routes through LiteLLM to an EXTERNALLY HOSTED,
+# OpenAI-compatible service. We don't self-host a model here — you provide the
+# upstream endpoint + API key (edit the `credentials` / `models` sections, or
+# substitute your values). The LiteLLM proxy exposes it as a first-class model
+# to its own consumers.
 
 # Reference only — the reconciler does not read this section.
 config:
@@ -82,24 +82,24 @@ virtual_keys:
     user_id: "username-service"
 
 credentials:
-  - credential_name: "tiny-vllm"
+  - credential_name: "external-openai-compatible"
     credential_info:
-      custom_llm_provider: "hosted_vllm"
+      custom_llm_provider: "hosted_vllm"   # treat as a generic OpenAI-compatible endpoint
     credential_values:
-      api_base: "http://vllm:8000/v1"   # Docker-internal service name of the vllm service
-      api_key: "local-demo-key"          # vLLM ignores auth by default; placeholder
+      api_base: "https://your-openai-compatible.example.com/v1"
+      api_key: "sk-external-service-key-00000000000000000000"
 
 models:
-  - model_name: "tiny-stories"
+  - model_name: "openai-compatible-model"
     model_info:
       id: "11111111-2222-3333-4444-555555555555"
-      mode: "completion"                 # GPT-Neo/GPT-2-class base model, text completion
-      base_model: "roneneldan/TinyStories-1M"
+      mode: "completion"                 # text completion on the upstream service
+      base_model: "your-remote-model"
       input_cost_per_million_tokens: 0.0
       output_cost_per_million_tokens: 0.0
     litellm_params:
-      model: "hosted_vllm/roneneldan/TinyStories-1M"
-      litellm_credential_name: "tiny-vllm"
+      model: "hosted_vllm/your-remote-model"
+      litellm_credential_name: "external-openai-compatible"
 
 guardrails:
   - guardrail_name: "pii-guard"

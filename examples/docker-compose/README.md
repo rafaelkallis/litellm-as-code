@@ -1,89 +1,109 @@
 # Docker Compose example — LiteLLM + litellm-as-code
 
-Brings up a **real, self-contained** LiteLLM stack with a local inference
-server, and configures the proxy's **runtime state** from a declarative spec —
-no external model provider keys required.
+Brings up a LiteLLM proxy (with a Postgres DB) and configures its **runtime
+state** from a declarative spec. The proxy **upstreams to an externally hosted,
+OpenAI-compatible service** — we don't self-host a model — so you only need
+the base URL + API key of whatever service you already have (hosted vLLM,
+an OpenAI-compatible gateway, etc.).
 
 ```
-┌────────────────────────────────────────────────────────────────────┐
-│  compose.yml                                                        │
-│                                                                     │
-│  ┌─────────────┐   /user,/team,/key,/credentials,/model,...        │
-│  │   litellm   │◀─────────────────────────┐   (admin REST API)      │
-│  │ :4000       │                          │                        │
-│  └──────┬──────┘                          │                        │
-│         │  realizes model "tiny-stories"  │                        │
-│         ▼                                 │                        │
-│  ┌─────────────┐   /v1/chat + /v1/models   │   one-shot             │
-│  │    vllm     │◀────────┐                │  ┌──────────────┐      │
-│  │ :8000       │         │  spec.yml ─────┼──▶│    config    │      │
-│  │ TinyStories │         │                │  │  (reconciler) │      │
-│  └─────────────┘         │                │  └──────────────┘      │
-└──────────────────────────┴────────────────┴────────────────────────┘
+             /user,/team,/key,/credentials,/model,...
+
+        ┌─────────────────────────────┐
+        │          litellm :4000       │
+        │   (LiteLLM proxy + admin API)│
+        └──┬───────────────────────▲──┘
+           │  upstream to external │
+           ▼  OpenAI-compatible    │  spec.yml
+        ┌──────────────────┐       │      │
+        │   external LLM   │       │   ┌──▼───────────┐
+        │   (hosted vLLM / │       │   │     config    │
+        │   OpenAI-compat.)│       │   │ (reconciler)  │
+        └──────────────────┘       │   └──────────────┘
+                                   │        (one-shot run)
+                                   ▼
+                            admin REST API
 ```
 
 Services (all on one Docker network):
 
 | service | image | role |
 |---|---|---|
+| `postgres` | `postgres:16-alpine` | DB backing the proxy's runtime state (users/teams/keys/models) |
 | `litellm` | `ghcr.io/berriai/litellm-database` | LiteLLM proxy + admin REST API, port 4000 |
-| `vllm` | `vllm/vllm-openai-cpu` | Local OpenAI-compatible inference server serving `roneneldan/TinyStories-1M`, port 8000 |
 | `config` | `ghcr.io/rafaelkallis/litellm-as-code` | Run-once reconciler: diff `spec.yml` → live admin API and apply deltas |
 
-## Why TinyStories-1M?
-
-[`roneneldan/TinyStories-1M`](https://huggingface.co/roneneldan/TinyStories-1M)
-is a ~3.7M-parameter GPT-Neo/GPT-2-class model from the TinyStories paper. It's
-tiny enough to run on **CPU**, so the example needs no GPU and no external API
-keys. It's still a real model — you can `curl` the proxy and get an actual
-story out of the other end.
+The external, OpenAI-compatible upstream is **not** part of this compose file —
+you supply its `base_url` + `api_key`. The exact model listed in `spec.yml`
+(the `models` section) is whatever that service exposes.
 
 ## Prerequisites
 
 - Docker (with Docker Compose v2)
-- A machine with a reasonable amount of RAM (the proxy + vLLM CPU + model
-  weights fit comfortably in a few GB)
-- Network access the first run (to pull images + download the model weights
-  from Hugging Face)
-
-> **CPU arch note:** the compose file defaults `VLLM_ARCH=latest-x86_64`.
-> On Apple Silicon set `VLLM_ARCH=latest-arm64`. vLLM's CPU backend prefers
-> AVX-512; on plain AVX2 CPUs it falls back to "limited features", which is
-> fine at this model size.
+- An externally hosted, OpenAI-compatible inference endpoint (base URL + API
+  key + a model name)
+- Network access to pull the images on first run
 
 ## Run it
 
 ```bash
 cd examples/docker-compose
-cp .env.example .env          # then set LITELLM_MASTER_KEY (and salt) in .env
-docker compose up -d litellm vllm     # start the proxy + vLLM
-docker compose run --rm config --dry-run   # plan: see what would change (exit 2 on diff)
-docker compose run --rm config              # apply / converge the proxy state
+cp .env.example .env          # set LITELLM_MASTER_KEY (and salt) in .env
+# Also fill in OPENAI_COMPATIBLE_BASE_URL / _API_KEY / _MODEL if you are not
+# editing spec.yml directly.
+docker compose up -d postgres litellm       # start the DB + proxy
+docker compose run --rm config --dry-run     # plan: see what would change (exit 2 on diff)
+docker compose run --rm config               # apply / converge the proxy state
 ```
 
 Re-running `config` is **idempotent**: the second run reports `0 to create,
 0 to update, N unchanged` and exits `0`.
 
+## Point the proxy at your external service
+
+Two ways — pick one:
+
+1. **Let the reconciler manage it (recommended for this example).** Edit
+   `spec.yml` → `credentials` and `models`:
+
+   ```yaml
+   credentials:
+     - credential_name: "external-openai-compatible"
+       credential_info:
+         custom_llm_provider: "hosted_vllm"   # generic OpenAI-compatible
+       credential_values:
+         api_base: "https://your-service.example.com/v1"
+         api_key: "sk-..."
+
+   models:
+     - model_name: "your-model-name"
+       model_info: { mode: "completion", base_model: "your-remote-model" }
+       litellm_params:
+         model: "hosted_vllm/your-remote-model"
+         litellm_credential_name: "external-openai-compatible"
+   ```
+
+   Then run `docker compose run --rm config` to register them in the proxy.
+
+2. **Via the startup `config.yaml`.** If you'd rather not manage the upstream
+   through the reconciler, set it there as a normal `model_list` entry and
+   leave it out of `spec.yml` (the reconciler only touches DB-backed rows it's
+   told about).
+
 ## Try it out
 
-`config` post-registers the `tiny-stories` model in LiteLLM's DB, backed by
-the local vLLM deployment. Test the full path through the proxy:
+After `config` runs, the model is registered in LiteLLM's DB and upstreams to
+your external service. Test the full path through the proxy:
 
 ```bash
 # list available models through the proxy
 curl -s http://localhost:4000/v1/models -H "Authorization: Bearer $LITELLM_MASTER_KEY"
 
-# ask TinyStories for a story, through LiteLLM -> vLLM
+# send a chat completion via the registered model
 curl -s http://localhost:4000/chat/completions \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"tiny-stories","messages":[{"role":"user","content":"Once upon a time,"}]}'
-```
-
-Or hit the raw engine directly (bypasses LiteLLM) for debugging:
-
-```bash
-curl -s http://localhost:8000/v1/models
+  -d '{"model":"your-model-name","messages":[{"role":"user","content":"Hello!"}]}'
 ```
 
 LiteLLM's Admin UI is at `http://localhost:4000/ui` (log in with
@@ -110,13 +130,18 @@ Things the reconciler deliberately does **not** manage:
 
 ## Under the hood
 
-- `litellm` runs SQLite (file-backed) via `litellm-database`, with
-  `STORE_MODEL_IN_DB=True` so models can be managed through the admin API
-  (required by the reconciler).
-- `vllm` serves `roneneldan/TinyStories-1M` with CPU-friendly flags
-  (`--dtype bfloat16`, small KV cache, eager mode).
+- `postgres` provides the execution database. The proxy's runtime state
+  (users/teams/keys/credentials/models) is stored there, so `Store model in DB`
+  (`STORE_MODEL_IN_DB=True`) works — models can be managed through the admin
+  API (required by the reconciler).
+
+  > LiteLLM requires PostgreSQL for its DB-backed features (`DATABASE_URL`)
+  > and rejects `sqlite://` — this stack therefore uses a real Postgres.
 - `config` waits for `litellm` to be healthy, then reconciles. Because models
   are DB-backed, there's no need to list them in the startup `config.yaml`.
+- The actual LLM traffic is forwarded to your external OpenAI-compatible
+  endpoint when a model is called; LiteLLM handles auth, rate-limits, and
+  key/budget tracking on top.
 
 ## Notes / tips
 
@@ -129,22 +154,3 @@ Things the reconciler deliberately does **not** manage:
   ```bash
   docker compose run --rm -e LITELLM_BASE_URL=http://your-proxy:4000 config
   ```
-- If vLLM fails to download the weights (network), the `vllm` service will
-  not become healthy and `config` will wait. Check `docker compose logs vllm`.
-
-## What was verified without Docker
-
-This repo's CI/dev environment is Docker-free, so the full stack was **not**
-booted here. What *is* verified, against the in-repo test harness:
-
-- `spec.yml` in this directory passes the project's own `load_spec` +
-  `validate_spec` (0 errors, 0 warnings).
-- Running the actual reconciler against the in-memory fake proxy: first run
-  creates all 9 sections, re-run is a **no-op** (idempotent, keys not
-  rotated), and `--dry-run` reports the creates without mutating.
-- The model is registered with the expected routing (credential `tiny-vllm`
-  → `http://vllm:8000/v1`, `model` = `hosted_vllm/roneneldan/TinyStories-1M`).
-
-To see the stack live, run `docker compose up` on a machine with Docker (you'll
-need network egress for first-time image pulls and the Hugging Face model
-download).
