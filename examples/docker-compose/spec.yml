@@ -93,7 +93,7 @@ models:
   - model_name: "tiny-stories"
     model_info:
       id: "11111111-2222-3333-4444-555555555555"
-      mode: "text"                        # GPT-Neo/GPT-2-class base model, plain text completion
+      mode: "completion"                 # GPT-Neo/GPT-2-class base model, text completion
       base_model: "roneneldan/TinyStories-1M"
       input_cost_per_million_tokens: 0.0
       output_cost_per_million_tokens: 0.0
