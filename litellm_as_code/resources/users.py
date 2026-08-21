@@ -12,6 +12,7 @@ from typing import Any
 from ..api import LiteLLMClient
 from ..diff import comparable_diff
 from ..types import Action, Diff
+from .roles import realign
 
 # Fields we can compare & manage. LiteLLM injects server defaults for many
 # others; keep this list tight to avoid perpetual drift.
@@ -37,7 +38,12 @@ def reconcile_users(
                 client.create_user(entry)
             continue
 
-        changes = comparable_diff(entry, existing, COMPARABLE)
+        # `/user/list` omits fields the proxy does not manage for a row (e.g.
+        # `auto_create_key` / `user_email` on master-key-created rows). Drop
+        # those from desired so they can't read as perpetual drift; only
+        # fields the API echoes are diffed.
+        want = realign(entry, existing, COMPARABLE)
+        changes = comparable_diff(want, existing, COMPARABLE)
         diffs.append(
             Diff("user", alias, Action.UPDATE if changes else Action.NOOP, changes)
         )
