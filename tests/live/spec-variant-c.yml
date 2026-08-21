@@ -1,0 +1,83 @@
+# litellm-as-code — variation test spec C.
+#
+# Purpose: permutation testing against the live proxy. Exercises:
+#   * EVERY value expressed explicitly (no omitted optional fields where
+#     possible): users with role+email+alias+auto_create_key, teams with
+#     max_budget+budget_duration+empty members, keys with empty lists,
+#     budgets with a full matrix, model with full costs + tier.
+#   * non-zero costs expressed as explicit per-token floats via model_info
+#     (alternate ecosystem convention) — must still converge.
+#   * guardrail with information, policy inheriting + both guardrail lists.
+#   * org with alias-only identity (no fixed id).
+
+users:
+  - user_id: "var-c-admin"
+    user_alias: "var-c-admin"
+    user_email: "var-c-admin@example.com"
+    user_role: "proxy_admin"
+    auto_create_key: "false"
+
+teams:
+  - team_alias: "var-team-c"
+    max_budget: 25.0
+    budget_duration: "30d"
+    members_with_roles:
+      - user_id: "var-c-admin"
+        role: "admin"
+
+virtual_keys:
+  - key_alias: "var-c-key"
+    key: "sk-var-c-key-44444444444444444444"
+    user_id: "var-c-admin"
+    models: []
+    allowed_routes: []
+
+budgets:
+  - budget_id: "var-c-budget"
+    max_budget: 50.0
+    soft_budget: 40.0
+    tpm_limit: 100000
+    rpm_limit: 1000
+    budget_duration: "30d"
+
+credentials:
+  - credential_name: "var-c-cred"
+    credential_info:
+      custom_llm_provider: "hosted_vllm"
+    credential_values:
+      api_base: "https://variant-c.example.com/v1"
+      api_key: "sk-var-cred-c"
+
+models:
+  - model_name: "var-model-c"
+    model_info:
+      id: "cccccccc-2222-3333-4444-555555555555"
+      mode: "completion"
+      base_model: "var-base-c"
+      tier: "free"
+      input_cost_per_token: 0.000002
+      output_cost_per_token: 0.000001
+    litellm_params:
+      model: "hosted_vllm/var-base-c"
+      litellm_credential_name: "var-c-cred"
+
+organizations:
+  - organization_alias: "var-org-c"
+    members_with_roles:
+      - user_id: "var-c-admin"
+        role: "org_admin"
+
+guardrails:
+  - guardrail_name: "var-guard-c"
+    litellm_params:
+      guardrail: "presidio"
+      mode: "pre_call"
+    guardrail_info:
+      description: "variant C guard"
+
+policies:
+  - policy_name: "var-policy-c"
+    inherit: "var-policy-a"
+    description: "variant C policy"
+    guardrails_add: ["var-guard-c"]
+    guardrails_remove: []

@@ -1,0 +1,83 @@
+# litellm-as-code — variation test spec B.
+#
+# Purpose: permutation testing against the live proxy. Exercises:
+#   * team with FIXED team_id + explicit max_budget/budget_duration
+#   * team with NO members
+#   * key with team_id binding + models + allowed_routes (non-empty)
+#   * user with explicit "true" auto_create_key
+#   * budget with tpm/rpm limits (int) + model_max_budget map
+#   * model with tier + non-zero costs via model_info (mode chat)
+#   * org without members
+#   * policy with inherit + guardrails_add; policy with NO lists at all
+#   * credential with model_id binding
+
+users:
+  - user_id: "var-b-admin"
+    user_alias: "var-b-admin-alias"
+    user_email: "var-b-admin@example.com"
+    user_role: "proxy_admin"
+    auto_create_key: "true"
+
+teams:
+  - team_id: "var-team-b-fixed"
+    team_alias: "var-team-b"
+    max_budget: 55.0
+    budget_duration: "7d"
+    members_with_roles:
+      - user_id: "var-b-admin"
+        role: "admin"
+
+  - team_alias: "var-team-b-empty"
+    models: []
+
+virtual_keys:
+  - key_alias: "var-b-key-teambound"
+    key: "sk-var-b-key-33333333333333333333"
+    team_id: "var-team-b-fixed"
+    models: ["var-model-b"]
+    allowed_routes: ["/chat/completions"]
+
+budgets:
+  - budget_id: "var-b-budget"
+    max_budget: 100.0
+    tpm_limit: 500000
+    rpm_limit: 2500
+    budget_duration: "30d"
+
+credentials:
+  - credential_name: "var-b-cred"
+    credential_info:
+      custom_llm_provider: "hosted_vllm"
+    credential_values:
+      api_base: "https://variant-b.example.com/v1"
+      api_key: "sk-var-cred-b"
+    model_id: "bbbbbbbb-2222-3333-4444-555555555555"
+
+models:
+  - model_name: "var-model-b"
+    model_info:
+      id: "bbbbbbbb-2222-3333-4444-555555555555"
+      mode: "chat"
+      base_model: "var-base-b"
+      tier: "free"
+      input_cost_per_million_tokens: 2.0
+      output_cost_per_million_tokens: 1.5
+    litellm_params:
+      model: "hosted_vllm/var-base-b"
+      litellm_credential_name: "var-b-cred"
+
+organizations:
+  - organization_id: "org-var-b"
+    organization_alias: "var-org-b"
+
+guardrails:
+  - guardrail_name: "var-guard-b"
+    litellm_params:
+      guardrail: "presidio"
+      mode: "pre_call"
+
+policies:
+  - policy_name: "var-policy-b"
+    inherit: "var-policy-a"
+    description: "variant B policy"
+    guardrails_add: ["var-guard-b"]

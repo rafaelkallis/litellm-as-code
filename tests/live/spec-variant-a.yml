@@ -1,0 +1,90 @@
+# litellm-as-code — variation test spec A.
+#
+# Purpose: permutation testing against the live proxy. Exercises:
+#   * fresh resources (no prior create) using alternate identity styles:
+#     - user with NO user_email/auto_create_key expressed
+#     - team keyed by alias only (no team_id)
+#     - key with NO caller-supplied key (server mints)
+#   * explicit empty lists instead of omitted (models: [], allowed_routes: [])
+#   * explicit float values instead of ints
+#   * budgets without budget_duration
+#   * org with members but a role repeated for two users
+#   * model with non-zero per-token-equivalent cost (0.5 per million -> 5e-7)
+#   * guardrail with description in guardrail_info
+#   * policy with guardrails_remove only (no guardrails_add)
+
+users:
+  - user_id: "var-admin"
+    user_alias: "var-admin-alias"
+    user_role: "proxy_admin"
+
+  - user_id: "var-service"
+    user_alias: "var-service-alias"
+    user_email: "var-service@example.com"
+    user_role: "internal_user"
+    auto_create_key: "false"
+
+teams:
+  - team_alias: "var-team-a"
+    members_with_roles:
+      - user_id: "var-admin"
+        role: "admin"
+      - user_id: "var-service"
+        role: "user"
+
+virtual_keys:
+  - key_alias: "var-key-minted"
+    user_id: "var-admin"
+    models: []
+    allowed_routes: []
+
+  - key_alias: "var-key-static"
+    key: "sk-var-static-key-22222222222222222222"
+    user_id: "var-service"
+
+budgets:
+  - budget_id: "var-budget-flat"
+    max_budget: 10.5
+    soft_budget: 5.25
+
+credentials:
+  - credential_name: "var-cred"
+    credential_info:
+      custom_llm_provider: "hosted_vllm"
+    credential_values:
+      api_base: "https://variant-a.example.com/v1"
+      api_key: "sk-var-cred-a"
+
+models:
+  - model_name: "var-model-a"
+    model_info:
+      id: "aaaaaaaa-2222-3333-4444-555555555555"
+      mode: "completion"
+      base_model: "var-base-a"
+      input_cost_per_million_tokens: 0.5
+      output_cost_per_million_tokens: 0.25
+    litellm_params:
+      model: "hosted_vllm/var-base-a"
+      litellm_credential_name: "var-cred"
+
+organizations:
+  - organization_id: "org-var-a"
+    organization_alias: "var-org-a"
+    members_with_roles:
+      - user_id: "var-admin"
+        role: "org_admin"
+      - user_id: "var-service"
+        role: "internal_user"
+
+guardrails:
+  - guardrail_name: "var-guard-a"
+    litellm_params:
+      guardrail: "presidio"
+      mode: "pre_call"
+    guardrail_info:
+      description: "variant A guard"
+
+policies:
+  - policy_name: "var-policy-a"
+    description: "variant A policy"
+    guardrails_remove: ["var-guard-a"]
