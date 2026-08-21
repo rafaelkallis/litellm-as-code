@@ -36,3 +36,14 @@ include = ["litellm_as_code*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Markers for the optional live-proxy integration suite (tests/live).
+# The default `pytest tests` run stays mock-only; integration tests are
+# collected but skipped unless LITELLM_BASE_URL + LITELLM_API_KEY are set.
+markers = [
+    "integration: full-stack tests against a real LiteLLM proxy (skipped unless LITELLM_BASE_URL+_API_KEY are set)",
+    "slow: slow tests (accidental-optimization guard: run explicitly with -m slow)",
+]
+
+# Keep the default unit run fast & hermetic: exclude the live suite unless
+# explicitly requested via --integration.
+addopts = "-m 'not integration'"

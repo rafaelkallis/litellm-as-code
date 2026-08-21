@@ -296,8 +296,30 @@ uv run pytest            # or: .venv/bin/python -m pytest
 If you don't want uv, `pip install -e ".[dev]"` into your own venv also works.
 
 Tests are mock-only (in-memory fake proxy) and mirror the package layout, per
-the LiteLLM-ecosystem convention. See `AGENTS.md` for the full contributor
-guide, scope boundaries, and API quirks reference.
+the LiteLLM-ecosystem convention.
+
+### Live-proxy integration tests (optional)
+
+`tests/live/` additionally ships an **integration suite** that runs the
+reconciler against a **real LiteLLM proxy** (see
+[`tests/live/README.md`](tests/live/README.md)). It is collected but skipped
+by default (`-m 'not integration'` in `pyproject.toml`); run it with a proxy
+up and the env vars set:
+
+```bash
+cd examples/docker-compose && docker compose up -d postgres litellm  # proxy on :4000
+export LITELLM_BASE_URL=http://localhost:4000
+export LITELLM_API_KEY=sk-demo-master-key-change-me   # your LITELLM_MASTER_KEY
+uv run pytest tests/live -m integration -v
+```
+
+This suite is a **hard quality gate for publishing**: the `publish` job in
+`.github/workflows/publish-image.yml` runs only after both the mock-only unit
+suite and the live integration suite pass (variants A/C + the mutation round,
+plus the documented example spec as a slow test).
+
+See `AGENTS.md` for the full contributor guide, scope boundaries, and API
+quirks reference.
 
 ## License
 

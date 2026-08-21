@@ -23,7 +23,7 @@ teams:
     budget_duration: "30d"
     members_with_roles:
       - user_id: "var-c-admin"
-        role: "admin"
+        role: "user"   # team "admin" is enterprise-only on OSS LiteLLM
 
 virtual_keys:
   - key_alias: "var-c-key"
