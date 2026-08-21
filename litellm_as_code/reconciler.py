@@ -44,7 +44,9 @@ def reconcile(
 
     Ordering is fixed: budgets -> models -> credentials -> organizations ->
     org members -> users -> teams -> team members -> keys -> guardrails ->
-    policies. Models/credentials come before organizations because LiteLLM
+    policies. Models must come before credentials: a credential can bind a
+    model via `model_id`, and POST /credentials rejects an unknown model with
+    a 404. Models/credentials come before organizations because LiteLLM
     requires at least one model to be configured before it lets you create an
     organization on a fresh proxy. Acyclic & single-target.
     """
@@ -57,11 +59,11 @@ def reconcile(
     banner("Budgets")
     extend(reconcile_budgets(client, spec.get("budgets", []), dry_run=dry_run))
 
-    banner("Credentials")
-    extend(reconcile_credentials(client, spec.get("credentials", []), dry_run=dry_run))
-
     banner("Models")
     extend(reconcile_models(client, spec.get("models", []), dry_run=dry_run))
+
+    banner("Credentials")
+    extend(reconcile_credentials(client, spec.get("credentials", []), dry_run=dry_run))
 
     banner("Organizations")
     org_diffs, org_specs = reconcile_organizations(

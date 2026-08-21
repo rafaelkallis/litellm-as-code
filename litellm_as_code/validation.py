@@ -200,6 +200,27 @@ def _entry_extra_keys(entry: dict[str, Any], model: type[BaseModel]) -> list[str
     return [k for k in entry if k not in known]
 
 
+# model_info.tier is an API enum ('free' | 'paid'); reject anything else at
+# spec-load time instead of a mid-run 422 from POST/PATCH /model/*.
+_MODEL_TIERS = ("free", "paid")
+
+
+def _check_model_tier(entry: dict[str, Any]) -> str | None:
+    """Return an error string when model_info.tier is set to a non-enum value."""
+    mi = entry.get("model_info")
+    if not isinstance(mi, dict):
+        return None
+    tier = mi.get("tier")
+    if tier is None:
+        return None
+    if not isinstance(tier, str) or tier not in _MODEL_TIERS:
+        return (
+            f"spec.models[...].model_info.tier: invalid tier {tier!r} "
+            f"(expected one of: {', '.join(_MODEL_TIERS)})"
+        )
+    return None
+
+
 def _validate_section(
     *,
     section: str,
@@ -220,6 +241,12 @@ def _validate_section(
         # Non-fatal: unknown per-resource keys are passed through verbatim.
         for key in _entry_extra_keys(raw, model):
             warnings.append(f"spec.{section}[{i}]: unknown key {key!r}")
+
+        # model_info.tier is an API enum; check it before the API would 422.
+        if section == "models":
+            tier_error = _check_model_tier(raw)
+            if tier_error:
+                errors.append(tier_error)
 
         try:
             model.model_validate(raw)

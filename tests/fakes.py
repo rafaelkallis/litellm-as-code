@@ -44,6 +44,7 @@ class FakeLiteLLM:
         client.create_team = self._create_team  # type: ignore[method-assign]
         client.update_team = self._update_team  # type: ignore[method-assign]
         client.add_team_members = self._add_members  # type: ignore[method-assign]
+        client.update_team_member_role = self._update_member_role  # type: ignore[method-assign]
         client.delete_team_member = self._delete_member  # type: ignore[method-assign]
         client._request = self._team_info_raw  # type: ignore[method-assign]
 
@@ -94,9 +95,14 @@ class FakeLiteLLM:
 
     # -- teams --------------------------------------------------------------
     def _create_team(self, payload):  # type: ignore[no-untyped-def]
-        tid = payload["team_id"]
-        self.teams[tid] = dict(payload)
-        return {}
+        # Real LiteLLM accepts alias-only teams and mints a team_id; the
+        # reconciler's identity rule matches on team_id if fixed, else
+        # team_alias. Mirror that.
+        tid = payload.get("team_id") or f"team-{len(self.teams) + 1}"
+        obj = dict(payload)
+        obj["team_id"] = tid
+        self.teams[tid] = obj
+        return {"team_id": tid}
 
     def _update_team(self, payload):  # type: ignore[no-untyped-def]
         # find by team_id if present, else by team_alias
@@ -114,6 +120,12 @@ class FakeLiteLLM:
             self.team_members[(team_id, m["user_id"])] = m["role"]
         return {}
 
+    def _update_member_role(self, team_id, user_id, *, role):  # type: ignore[no-untyped-def]
+        # POST /team/member_update — change an EXISTING member's role.
+        # (Real proxy 400s on member_add for an existing member.)
+        self.team_members[(team_id, user_id)] = role
+        return {}
+
     def _delete_member(self, team_id, user_id=None, user_email=None):  # type: ignore[no-untyped-def]
         for k in list(self.team_members):
             if k[0] == team_id and user_id and k[1] == user_id:
@@ -121,14 +133,12 @@ class FakeLiteLLM:
         return {}
 
     def _team_info_raw(self, method, path, **kwargs):  # type: ignore[no-untyped-def]
-        # used by teams.py _team_info
+        # used by teams.py _team_info; mirrors the real GET /team/info read:
+        # members are ONLY members added via member_add (no placeholder
+        # default_user_id row, no automatic members from the create payload).
         team_id = kwargs.get("params", {}).get("team_id")
         team = self.teams.get(team_id, {})
-        members = [
-            {"user_id": uid, "role": role}
-            for (tid, uid), role in self.team_members.items()
-            if tid == team_id
-        ]
+        members = [{"user_id": uid, "role": role} for (tid, uid), role in self.team_members.items() if tid == team_id]
         return {"team_info": {**team, "members_with_roles": members}}
 
     # -- keys ---------------------------------------------------------------
@@ -337,18 +347,19 @@ class FakeLiteLLM:
         return {"policy_id": pid, "policy_name": name}
 
     def _update_policy(self, policy_id, payload):  # type: ignore[no-untyped-def]
+        # Mirror the real proxy: PUT only applies to DRAFT versions.
+        # Published (production) policies reject updates with the proxy's
+        # exact error, forcing the reconciler's recreate path.
+        from litellm_as_code.types import ReconcilerError
+
         for name, pid in self.policy_ids.items():
             if pid == policy_id:
-                new_name = payload.get("policy_name", name)
-                if new_name != name:
-                    self.policies.pop(name)
-                    self.policy_ids.pop(name)
-                    self.policies[new_name] = dict(payload)
-                    self.policy_ids[new_name] = pid
-                else:
-                    self.policies[name].update(payload)
-                return {}
-        return {}
+                raise ReconcilerError(
+                    "PUT /policies/{id} failed: 400 Client Error: Bad Request for "
+                    f"url: /policies/{policy_id} {{\"detail\":\"Only draft versions "
+                    "can be updated. Publish or create a new version to change "
+                    "published/production.\"}}"
+                )
 
     def _delete_policy(self, policy_id):  # type: ignore[no-untyped-def]
         for name, pid in list(self.policy_ids.items()):

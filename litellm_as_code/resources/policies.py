@@ -13,7 +13,13 @@ proxy's startup `config.yaml` with `definition_location="config"`. Those are
 startup configuration, NOT DB-managed runtime state — we never diff or delete
 them.
 
-Mutation: POST /policies | PUT /policies/{id} | DELETE /policies/{id}.
+Versioning: policies are versioned. `PUT /policies/{id}` only accepts DRAFT
+versions — published/production rows reject updates ("Only draft versions can
+be updated"). This proxy exposes no versioning API, so a drifted policy is
+recreated (delete + re-create under the same `policy_name`, which creates a
+new production version).
+
+Mutation: POST /policies | PUT /policies/{id} (drafts) | DELETE /policies/{id}.
 """
 
 from __future__ import annotations
@@ -77,12 +83,17 @@ def reconcile_policies(
 
         policy_id = existing.get("policy_id")
         changes = comparable_diff(_normalize(entry), _normalize(existing), COMPARABLE)
+        if not changes:
+            diffs.append(Diff("policy", name, Action.NOOP))
+            continue
+
+        # Published policies reject PUT (only drafts are updatable) and the
+        # proxy has no versioning endpoint — recreate instead.
         diffs.append(
-            Diff("policy", name, Action.UPDATE if changes else Action.NOOP, changes)
+            Diff("policy", name, Action.UPDATE, changes, message="recreate (new version)")
         )
-        if changes and not dry_run:
-            payload = dict(entry)
-            payload.pop("policy_id", None)
-            client.update_policy(policy_id, payload)
+        if not dry_run:
+            client.delete_policy(policy_id)
+            client.create_policy(entry)
 
     return diffs

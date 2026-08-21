@@ -148,7 +148,9 @@ def reconcile_team_members(
                     )
                 )
                 if not dry_run:
-                    client.add_team_members(team_id, [{"user_id": uid, "role": role}])
+                    # member_add 400s (team_member_already_in_team) for an
+                    # existing member; the role must go through member_update.
+                    client.update_team_member_role(team_id, uid, role=role)
 
         for uid in live_by_id:
             if uid not in want_by_id:

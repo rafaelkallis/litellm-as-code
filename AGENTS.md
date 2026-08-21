@@ -32,8 +32,11 @@ proxy's startup `config.yaml`.
 spec.yml  --diff-->  live API  --apply-->  converge
 ```
 
-Ordering is fixed: `users -> teams -> team members -> keys -> credentials ->
-models`. Acyclic & single-target; do not add a graph solver.
+Ordering is fixed: `budgets -> models -> credentials -> organizations (+
+members) -> users -> teams (+ members) -> keys -> guardrails -> policies`.
+Acyclic & single-target; do not add a graph solver. Models come before
+credentials because a credential's `model_id` must reference an existing
+model (POST /credentials 404s otherwise).
 
 Identity is **fully API-derived** — there is no local applied-state file:
 - key existence: `key_alias` (uniqueness enforced by the proxy) from `/key/list`;

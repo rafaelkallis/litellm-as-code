@@ -231,6 +231,37 @@ def test_model_cost_is_stable_across_reconciles(ctx, tmp_path):
     assert lp["input_cost_per_token"] == 3.0 / 1_000_000.0
 
 
+def test_model_nonzero_cost_converges_when_live_echoes_per_million(ctx, tmp_path):
+    """Real-proxy behavior found via permutation testing: with
+    STORE_MODEL_IN_DB the server echoes the per-million cost back under
+    model_info AND a recomputed per-token value that is 0 for DB-backed
+    models. A non-zero spec cost must still converge (compare in either
+    unit), not flag an update every run."""
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(json.dumps(SPEC))
+    reconcile(str(spec), client, dry_run=False)
+
+    # Mimic the real proxy: keep per-million in model_info, echo per-token as
+    # 0 (recomputed lazily, cost table not loaded).
+    m = fake.models["org/chat"]
+    lp = m["litellm_params"]
+    # real proxy's read-back model_info carries both per-million + per-token
+    m["model_info"] = {
+        **m.get("model_info", {}),
+        "input_cost_per_million_tokens": 3.0,
+        "output_cost_per_million_tokens": 0.0,
+        "input_cost_per_token": 0,
+        "output_cost_per_token": 0,
+    }
+    lp["input_cost_per_token"] = 0
+    lp["output_cost_per_token"] = 0
+
+    plan = reconcile(str(spec), client, dry_run=False)
+    model_diffs = [d for d in plan.diffs if d.resource_type == "model"]
+    assert all(d.action is Action.NOOP for d in model_diffs), model_diffs
+
+
 def test_full_surface_first_run_creates_everything(ctx, tmp_path):
     """All reconcilable sections create their resources on the first run:
     2 users + team + 2 members + key + cred + model + budget + org + 1 org
@@ -263,6 +294,164 @@ def test_full_surface_second_run_is_noop(ctx, tmp_path):
         assert all(d.action is Action.NOOP for d in diffs), rtype
     assert plan.create_count == 0
     assert plan.update_count == 0
+
+
+def test_models_are_reconciled_before_credentials_with_model_id(ctx, tmp_path):
+    """A credential that binds a model via model_id must be created AFTER the
+    model exists — POST /credentials 404s on unknown model_id (found live:
+    `404 Model not found`). The fixed ordering is models -> credentials."""
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    model_id = "bbbbbbbb-2222-3333-4444-555555555555"
+    spec.write_text(
+        json.dumps(
+            {
+                "credentials": [
+                    {
+                        "credential_name": "c-model",
+                        "credential_info": {"custom_llm_provider": "hosted_vllm"},
+                        "credential_values": {"api_key": "sk-x"},
+                        "model_id": model_id,
+                    }
+                ],
+                "models": [
+                    {
+                        "model_name": "m-bound",
+                        "model_info": {"id": model_id, "mode": "chat", "base_model": "b"},
+                        "litellm_params": {"model": "hosted_vllm/b"},
+                    }
+                ],
+            }
+        )
+    )
+
+    plan = reconcile(str(spec), client, dry_run=False)
+    assert plan.create_count == 2
+    assert "m-bound" in fake.models
+    assert "c-model" in fake.credentials
+    # second run converges (model_id is write-once, never echoed back)
+    plan2 = reconcile(str(spec), client, dry_run=False)
+    assert plan2.update_count == 0
+
+
+def test_guardrail_info_omitted_converges_against_empty_dict(ctx, tmp_path):
+    """The live proxy echoes guardrail_info as {} when a guardrail has none,
+    while the spec omits it (None). That must not read as perpetual drift."""
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(
+        json.dumps(
+            {
+                "guardrails": [
+                    {
+                        "guardrail_name": "g-bare",
+                        "litellm_params": {"guardrail": "presidio", "mode": "pre_call"},
+                    }
+                ]
+            }
+        )
+    )
+    reconcile(str(spec), client, dry_run=False)
+    # mimic the live read-back: guardrail_info echoed as {} even though
+    # the spec never set it
+    fake.guardrails["g-bare"]["guardrail_info"] = {}
+
+    plan = reconcile(str(spec), client, dry_run=False)
+    gd = [d for d in plan.diffs if d.resource_type == "guardrail"]
+    assert all(d.action is Action.NOOP for d in gd), gd
+
+
+def test_alias_only_team_second_run_is_noop(ctx, tmp_path):
+    """Teams without a fixed team_id (alias identity) must create cleanly AND
+    not report a phantom default_user_id member on the second run (real proxy
+    /team/info never echoes one; found via live permutation testing)."""
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(
+        json.dumps(
+            {
+                "teams": [
+                    {
+                        "team_alias": "alias-team",
+                        "members_with_roles": [{"user_id": "u1", "role": "admin"}],
+                    }
+                ]
+            }
+        )
+    )
+    reconcile(str(spec), client, dry_run=False)
+    plan = reconcile(str(spec), client, dry_run=False)
+
+    team_diffs = [d for d in plan.diffs if d.resource_type == "team"]
+    member_diffs = [d for d in plan.diffs if d.resource_type == "team_member"]
+    assert all(d.action is Action.NOOP for d in team_diffs), team_diffs
+    assert member_diffs == [], member_diffs
+
+
+def test_team_member_role_change_uses_member_update(ctx, tmp_path):
+    """Changing an EXISTING team member's role must call /team/member_update —
+    member_add 400s with team_member_already_in_team on the real proxy."""
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(json.dumps(SPEC))
+    reconcile(str(spec), client, dry_run=False)
+
+    # u2's role changes within team-prod
+    changed = json.loads(spec.read_text())
+    changed["teams"][0]["members_with_roles"] = [
+        {"user_id": "u1", "role": "admin"},
+        {"user_id": "u2", "role": "admin"},
+    ]
+    spec.write_text(json.dumps(changed))
+
+    plan = reconcile(str(spec), client, dry_run=False)
+    updates = [d for d in plan.diffs if d.action is Action.UPDATE and d.resource_type == "team_member"]
+    assert any(d.name == "prod/u2" for d in updates)
+
+    # member_update path was used and the fake stored the new role
+    assert fake.team_members[("team-prod", "u2")] == "admin"
+
+
+def test_policy_drift_recreates_production_version(ctx, tmp_path):
+    """Published (production) policies reject PUT on the real proxy
+    ("Only draft versions can be updated"); there is no versioning endpoint,
+    so a drifted policy must be recreated (delete + re-create) rather than
+    updated."""
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(json.dumps(FULL_SPEC))
+    reconcile(str(spec), client, dry_run=False)
+
+    changed = json.loads(spec.read_text())
+    changed["policies"][0]["description"] = "updated baseline"
+    changed["policies"][0]["guardrails_add"] = ["pii-guard", "toxicity-filter"]
+    spec.write_text(json.dumps(changed))
+
+    plan = reconcile(str(spec), client, dry_run=False)
+    policy_diffs = [d for d in plan.diffs if d.resource_type == "policy"]
+    assert any(d.action is Action.UPDATE for d in policy_diffs)
+
+    # the drifted policy was recreated under the same name with new content
+    live = fake._list_policies()
+    by_name = {p["policy_name"]: p for p in live}
+    assert by_name["global-baseline"]["description"] == "updated baseline"
+    assert by_name["global-baseline"]["guardrails_add"] == ["pii-guard", "toxicity-filter"]
+
+    # and the state now converges
+    plan2 = reconcile(str(spec), client, dry_run=False)
+    policy_diffs2 = [d for d in plan2.diffs if d.resource_type == "policy"]
+    assert all(d.action is Action.NOOP for d in policy_diffs2), policy_diffs2
+
+
+def test_model_tier_validation_rejects_non_enum():
+    """model_info.tier is an API enum ('free'|'paid') — an invalid value must
+    be caught at spec load (found live: 422 literal_error on PATCH /model/*)."""
+    from litellm_as_code.validation import _check_model_tier
+
+    assert _check_model_tier({"model_info": {"tier": "standard"}}) is not None
+    assert _check_model_tier({"model_info": {"tier": "paid"}}) is None
+    assert _check_model_tier({"model_info": {"tier": "free"}}) is None
+    assert _check_model_tier({"model_info": {}}) is None
 
 
 def test_list_models_empty_db_five_hundred_becomes_empty_list():

@@ -127,6 +127,25 @@ class LiteLLMClient:
             "POST", "/team/member_add", json={"team_id": team_id, "member": members}
         )
 
+    def update_team_member_role(
+        self,
+        team_id: str,
+        user_id: str,
+        *,
+        role: str,
+    ) -> dict[str, Any]:
+        """Change an EXISTING team member's role.
+
+        POST /team/member_add 400s with `team_member_already_in_team` when
+        the user already belongs; /team/update does not touch member roles.
+        The proxy exposes POST /team/member_update for exactly this.
+        """
+        return self._request(
+            "POST",
+            "/team/member_update",
+            json={"team_id": team_id, "user_id": user_id, "role": role},
+        )
+
     def delete_team_member(
         self, team_id: str, user_id: str | None = None, user_email: str | None = None
     ) -> dict[str, Any]:

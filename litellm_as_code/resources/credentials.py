@@ -45,6 +45,11 @@ def reconcile_credentials(
 
         # comparable, non-secret drift against live
         changes = dict(comparable_diff(entry, existing, COMPARABLE))
+        # `model_id` is accepted on create but NEVER echoed by /credentials
+        # (live list always returns None). It is write-once: drop it from the
+        # diff so it can't read as perpetual drift; it is re-asserted below
+        # whenever a comparable change fires.
+        changes.pop("model_id", None)
 
         diffs.append(
             Diff("credential", name, Action.UPDATE if changes else Action.NOOP, changes)

@@ -35,16 +35,64 @@ def _comparable_model(remote: dict[str, Any]) -> dict[str, Any]:
     for k in ("mode", "base_model", "tier"):
         if mi.get(k) is not None:
             out[k] = mi[k]
-    for k in (
-        "custom_llm_provider",
-        "model",
-        "litellm_credential_name",
-        "input_cost_per_token",
-        "output_cost_per_token",
-    ):
+    for k in ("custom_llm_provider", "model", "litellm_credential_name"):
         if lp.get(k) is not None:
             out[k] = lp[k]
+    for k in ("input_cost_per_token", "output_cost_per_token"):
+        # The proxy echoes per-token costs under model_info; some versions and
+        # our fake store them under litellm_params. Read whichever carries it.
+        v = mi.get(k)
+        if v is None:
+            v = lp.get(k)
+        if v is not None:
+            out[k] = v
+
+    # With STORE_MODEL_IN_DB the proxy echoes the *per-million* costs back
+    # under model_info (the DB columns) and recomputes per-token on the fly
+    # (0 when the cost table isn't loaded). Carry those over so a non-zero
+    # per-million value that maps to per-token can be compared in either unit.
+    for k in ("input_cost_per_million_tokens", "output_cost_per_million_tokens"):
+        if mi.get(k) is not None:
+            out[k] = mi[k]
     return out
+
+
+def _cost_equal(want: Any, have: Any) -> bool:
+    """Compare costs tolerantly: 0 == 0.0, numeric equality across types.
+
+    The proxy stores zero costs as int `0` and non-zero per-token values as
+    float; our per-token conversion always yields float. A literal `!=` would
+    flag `0 != 0.0` as perpetual drift, so compare numerically when both sides
+    are numbers.
+    """
+    if want == have:
+        return True
+    if isinstance(want, (int, float)) and isinstance(have, (int, float)):
+        return float(want) == float(have)
+    return False
+
+
+def _per_token_equal(
+    want: Any, have: dict[str, Any], per_million_key: str
+) -> bool:
+    """True when a desired per-token cost matches what the live model reports.
+
+    The proxy can report the same cost in two units: the per-token value it
+    recomputes (often 0 for DB-backed models whose cost table isn't loaded)
+    or the authoritative per-million columns. Accept a match in either unit:
+
+    - exact per-token match (numeric-tolerant), or
+    - desired per-token == live per-million / 1e6, or
+    - desired per-token == 0 and live per-million == 0.0 (both "no cost").
+    """
+    have_per_token = have.get("input_cost_per_token" if per_million_key.startswith("input") else "output_cost_per_token")
+    if _cost_equal(want, have_per_token):
+        return True
+    live_per_million = have.get(per_million_key)
+    if live_per_million is not None and isinstance(live_per_million, (int, float)):
+        if _cost_equal(want, float(live_per_million) / 1_000_000.0):
+            return True
+    return False
 
 
 def reconcile_models(
@@ -91,9 +139,19 @@ def reconcile_models(
 
         have = _comparable_model(remote)
         # treat remote "model" <provider>/<base> as equal to our litellm_params.model
-        changes = {
-            k: (want[k], have.get(k)) for k in want if have.get(k) != want[k]
-        }
+        # and compare costs with unit tolerance (per-token vs per-million/1e6,
+        # 0 == 0.0, int vs float)
+        changes = {}
+        for k in want:
+            h = have.get(k)
+            if k == "input_cost_per_token":
+                equal = _per_token_equal(want[k], have, "input_cost_per_million_tokens")
+            elif k == "output_cost_per_token":
+                equal = _per_token_equal(want[k], have, "output_cost_per_million_tokens")
+            else:
+                equal = want[k] == h
+            if not equal:
+                changes[k] = (want[k], h)
         diffs.append(
             Diff("model", name, Action.UPDATE if changes else Action.NOOP, changes)
         )
