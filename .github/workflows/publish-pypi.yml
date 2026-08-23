@@ -1,0 +1,105 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Unit tests (mock-only)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies (dev extras)
+        run: uv sync --extra dev
+
+      - name: Run unit test suite (mock-only)
+        run: uv run pytest tests -m 'not integration'
+
+  integration:
+    name: Integration tests (live LiteLLM proxy)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies (dev extras)
+        run: uv sync --extra dev
+
+      - name: Start Postgres + LiteLLM proxy
+        working-directory: examples/docker-compose
+        env:
+          LITELLM_MASTER_KEY: sk-ci-master-key-0123456789abcdef
+          LITELLM_SALT_KEY: sk-ci-salt-key-0123456789abcdef
+          LITELLM_VERSION: latest
+        run: |
+          docker compose up -d postgres litellm
+          # first boot runs DB migrations; wait for the healthcheck
+          for i in $(seq 1 60); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' litellm-as-code-litellm 2>/dev/null || true)
+            echo "attempt $i: $status"
+            [ "$status" = "healthy" ] && break
+            sleep 5
+          done
+          [ "$status" = "healthy" ] || { docker compose logs litellm; exit 1; }
+
+      - name: Run integration suite (variants + mutation round)
+        env:
+          LITELLM_BASE_URL: http://localhost:4000
+          LITELLM_API_KEY: sk-ci-master-key-0123456789abcdef
+        run: uv run pytest tests/live -m 'integration and not slow' -v
+
+      - name: Run slow integration test (documented example spec)
+        env:
+          LITELLM_BASE_URL: http://localhost:4000
+          LITELLM_API_KEY: sk-ci-master-key-0123456789abcdef
+        run: uv run pytest tests/live -m slow -v
+
+      - name: Collect proxy logs on failure
+        if: failure()
+        working-directory: examples/docker-compose
+        run: docker compose logs --tail 200 litellm
+
+  publish:
+    name: Build & publish sdist/wheel to PyPI
+    # Quality gate: BOTH the mock-only unit suite and the live-proxy
+    # integration suite must pass before anything is published.
+    needs: [test, integration]
+    runs-on: ubuntu-latest
+    # Trusted publishing: the OIDC token is minted only for the `release`
+    # environment (matches the PyPI trusted publisher configuration).
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Build sdist and wheels
+        run: uv build
+
+      - name: Publish to PyPI
+        run: uv publish --publish-url https://upload.pypi.org/legacy/

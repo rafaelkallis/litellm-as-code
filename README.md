@@ -51,13 +51,29 @@ config-file-only entries.
 
 ## Install
 
+Two ways to run `litellm-as-code`:
+
+**uvx (quickest — no install)** — runs the latest published release from PyPI
+in an ephemeral environment:
+
 ```bash
-pip install .            # from source
-# or use the prebuilt image (see Docker below):
-docker pull ghcr.io/rafaelkallis/litellm-as-code:latest
+uvx litellm-as-code --version
 ```
 
-(Or copy `examples/spec.yml` and run from a venv: `pip install -e .`)
+**pip** — install into your current environment:
+
+```bash
+pip install litellm-as-code
+```
+
+(From source, or for the editable dev workflow: `pip install .` /
+`pip install -e ".[dev]"`.)
+
+A prebuilt OCI image is also published to GHCR (see [Docker](#docker)).
+
+> First `uvx` run downloads `litellm-as-code` and its (minimal) dependencies
+> once, then caches them. Pin the version for reproducible CI runs with
+> `uvx --from litellm-as-code==0.5.0 litellm-as-code ...`.
 
 ## Quickstart
 
@@ -70,10 +86,10 @@ export LITELLM_API_KEY="sk-admin-..."
 cp examples/spec.yml spec.yml
 
 # 3. plan (no changes applied; exit 2 if a diff exists)
-litellm-as-code spec.yml --dry-run
+uvx litellm-as-code spec.yml --dry-run
 
 # 4. apply
-litellm-as-code spec.yml
+uvx litellm-as-code spec.yml
 ```
 
 No local state file is written — the live proxy is the single source of truth
