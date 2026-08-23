@@ -51,7 +51,7 @@ config-file-only entries.
 
 ## Install
 
-Two ways to run `litellm-as-code`:
+There are a few ways to run `litellm-as-code`:
 
 **uvx (quickest — no install)** — runs the latest published release from PyPI
 in an ephemeral environment:
@@ -328,10 +328,11 @@ export LITELLM_BASE_URL=http://localhost:4000
 export LITELLM_API_KEY=sk-demo-master-key-change-me   # your LITELLM_MASTER_KEY
 uv run pytest tests/live -m integration -v
 ```
-The integration suite is pinned to a specific LiteLLM proxy image
-(`LITELLM_VERSION=v1.97.0`) so runs stay reproducible; bump it deliberately and
-note the version it was verified against when changing endpoints (see
-`AGENTS.md` §9).
+The PyPI release workflow pins the proxy image to a specific LiteLLM version
+(`LITELLM_VERSION=v1.97.0`), so a tag re-run tests the same proxy code; bump
+it deliberately and note the version it was verified against when changing
+endpoints (see `AGENTS.md` §9). The local Compose example and the container
+publish workflow still default to `latest`.
 This suite is a **hard quality gate for publishing**: the `publish` job in
 `.github/workflows/publish-image.yml` runs only after both the mock-only unit
 suite and the live integration suite pass (variants A/C + the mutation round,
