@@ -1,0 +1,52 @@
+# Skill eval consistency check (DISABLED by default).
+#
+# Validates that `skills/litellm-as-code/evals/evals.json` stays
+# well-formed and consistent with the skill across PRs, WITHOUT running the
+# eval loop (which needs an agent runtime + a live proxy — a manual/dev
+# workflow, see agentskills.io 'Evaluating skills').
+#
+# To enable: add a job in this file (or flip `if:` to false/remove the guard
+# job) and wire it into PR checks.
+name: Skill evals consistency
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Entry gate: still shows in the Actions list but exits 0 by default, so the
+  # check is "ready" without failing CI. Remove this job (and the `needs`) to
+  # make the eval check actually enforce.
+  disabled-guard:
+    name: Eval check (disabled — flip to enforce)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Echo disabled state
+        run: |
+          echo "::notice::Skill eval consistency is DISABLED by default."
+          echo "Remove the disabled-guard job and its 'needs:' to enforce."
+
+  check-evals:
+    name: Validate skills/litellm-as-code/evals/evals.json
+    runs-on: ubuntu-latest
+    needs: [disabled-guard] # <- remove `needs:` to enable enforcement
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies (dev extras)
+        run: uv sync --extra dev
+
+      - name: Validate eval file structure
+        working-directory: ${{ github.workspace }}
+        run: uv run pytest tests/test_skill_evals.py -q

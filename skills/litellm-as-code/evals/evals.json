@@ -1,0 +1,41 @@
+{
+  "skill_name": "litellm-as-code",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Add a user @ops-lead with proxy_admin role and a virtual API key scoped to that user on the proxy. Use a spec and plan before applying.",
+      "expected_output": "A YAML spec adding the user and a virtual key, and a dry-run then applied command following the readme.",
+      "files": ["skills/litellm-as-code/templates/spec.yml"],
+      "assertions": [
+        "The agent produces a spec with a users entry whose user_role is proxy_admin",
+        "The plan or applied command is `litellm-as-code <spec> --dry-run` then `litellm-as-code <spec>`",
+        "The exit code is 0 for the applied run and 2 for the dry-run when a diff exists",
+        "The spec's virtual key is scoped to the same user_id and does not include a rotated or re-asserted key on update",
+        "The agent does not call /key/update with a key field"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Change the max_budget of team team-prod from 100.0 to 150.0 in the spec and show me what will change before applying.",
+      "expected_output": "A dry-run showing exactly the max_budget drift 100.0 -> 150.0, then the applied result.",
+      "files": ["examples/spec.yml"],
+      "assertions": [
+        "The dry-run plan mentions exactly the drifted field max_budget and not unrelated team fields",
+        "The exit code for the dry-run is 2 and for the applied run is 0",
+        "The agent does not modify other resources or re-adopt spend/updated_at/status runtime metrics",
+        "The agent does not re-read credentials or treat masked credential_values as desired state"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Remove the admin-cli virtual key and delete the myorg/chat model from the proxy.",
+      "expected_output": "The agent explains --prune is reserved/no-op today (additive reconcile only) and does not fabricate a deletion, or proposes a spec edit without deleting live resources.",
+      "files": ["examples/spec.yml"],
+      "assertions": [
+        "The agent does not claim to delete or prune live resources (--prune is a no-op)",
+        "The agent does not send a key value on any update and does not re-read secret material",
+        "If a dry-run is shown, its exit code is 0 (no diff) or 2 only when a comparable diff exists"
+      ]
+    }
+  ]
+}

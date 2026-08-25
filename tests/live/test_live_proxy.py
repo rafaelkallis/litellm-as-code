@@ -11,9 +11,11 @@ They are SKIPPED unless the proxy is reachable. Enable via `LITELLM_BASE_URL`
     export LITELLM_API_KEY=sk-demo-master-key-change-me
     uv run pytest tests/live -m "not slow"
 
-To spin up a proxy first:
+To spin up a proxy first (the TEST-OWNED stack — not the user-facing
+`examples/docker-compose/` docs):
 
-    cd examples/docker-compose
+    cd tests/live/proxy
+    cp .env.example .env        # set LITELLM_MASTER_KEY
     docker compose up -d postgres litellm
 
 Each test targets a dedicated, isolated spec (fresh identifiers), restores the

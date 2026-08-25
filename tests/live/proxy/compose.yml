@@ -1,0 +1,63 @@
+# litellm-as-code — TEST-OWNED LiteLLM proxy stack (integration tests).
+#
+# This is the test fixture for the live integration suite in `tests/live/`.
+# It is intentionally separate from `examples/docker-compose/`, which is
+# USER-FACING documentation. Tests must not depend on the docs example for
+# their fixture (a doc could drift/skip healthcheck and silently break CI).
+#
+# It stands up the same core as the example (postgres + litellm-database),
+# sized for tests, with a deterministic throwaway master key and no external
+# upstream (the reconciler's admin API works without any model upstream;
+# model-creation in the spec is DB-backed and doesn't need an inference
+# endpoint).
+#
+# Use:  cd tests/live && cp .env.example .env   (or export LITELLM_MASTER_KEY)
+#       docker compose -f proxy/compose.yml up -d postgres litellm
+#       export LITELLM_BASE_URL=http://localhost:4000
+#       export LITELLM_API_KEY="$LITELLM_MASTER_KEY"
+#       uv run pytest tests/live -m "not slow"
+
+name: litellm-as-code-tests
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: litellm-as-code-tests-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-litellm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-litellm}
+      POSTGRES_DB: ${POSTGRES_DB:-litellm}
+    volumes:
+      - postgres-test-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-litellm} -d ${POSTGRES_DB:-litellm}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  litellm:
+    image: ghcr.io/berriai/litellm-database:${LITELLM_VERSION:-v1.97.0}
+    container_name: litellm-as-code-tests-litellm
+    ports:
+      - "${LITELLM_PORT:-4000}:4000"
+    environment:
+      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY in .env or the shell}"
+      # deterministic salt for CI reproducibility
+      LITELLM_SALT_KEY: "litellm-as-code-tests-salt"
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-litellm}:${POSTGRES_PASSWORD:-litellm}@postgres:5432/${POSTGRES_DB:-litellm}"
+      STORE_MODEL_IN_DB: "True"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:4000/health/liveliness').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  postgres-test-data:

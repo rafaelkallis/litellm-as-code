@@ -1,0 +1,104 @@
+# litellm-as-code — starter spec (editable).
+#
+# Declares the RUNTIME state of a LiteLLM proxy: budgets, organizations,
+# users, teams, team members, virtual keys, credentials, models,
+# guardrails, policies.
+#
+# Not managed (startup-only, ignored by the reconciler): general_settings,
+# litellm_settings, router_settings from the proxy's config.yaml.
+#
+# Secrets (credential_values, key:) are WRITE-ONCE — omit `key` to have
+# LiteLLM generate it; provider credentials are sent on create and never read
+# back in plaintext.
+
+budgets:
+  - budget_id: "service-budget"
+    max_budget: 25.0
+    soft_budget: 20.0
+    tpm_limit: 100000
+    rpm_limit: 1000
+    budget_duration: "30d"
+
+organizations:
+  - organization_id: "org-acme"
+    organization_alias: "acme"
+    members_with_roles:
+      - user_id: "username-admin"
+        role: "org_admin"
+
+users:
+  - user_id: "username-admin"
+    user_alias: "admin"
+    user_email: "admin@example.com"
+    user_role: "proxy_admin"
+    auto_create_key: "false"
+
+  - user_id: "username-service"
+    user_alias: "service"
+    user_role: "internal_user_viewer"
+
+teams:
+  - team_id: "team-prod"
+    team_alias: "production"
+    organization_id: "org-acme"
+    max_budget: 100.0
+    budget_duration: "30d"
+    models: ["myorg/chat"]
+    members_with_roles:
+      - user_id: "username-service"
+        role: "user"
+
+  - team_id: "team-guest"
+    team_alias: "guest"
+
+virtual_keys:
+  - key_alias: "admin-cli"
+    # omit `key` to let LiteLLM generate (value printed once on create)
+    key: "sk-example-static-key"
+    user_id: "username-admin"
+
+  - key_alias: "service-readonly"
+    user_id: "username-service"
+    models: ["myorg/chat"]
+    max_budget: 10.0
+    budget_duration: "30d"
+
+credentials:
+  - credential_name: "my-vllm"
+    credential_info:
+      custom_llm_provider: "hosted_vllm"
+    credential_values:
+      api_base: "http://my-vllm:8000/v1"
+      api_key: "sk-provider-key"
+
+models:
+  - model_name: "myorg/chat"
+    model_info:
+      mode: "chat"
+      base_model: "some-chat-model"
+      input_cost_per_million_tokens: 3.0
+      output_cost_per_million_tokens: 15.0
+    litellm_params:
+      model: "hosted_vllm/some-chat-model"
+      litellm_credential_name: "my-vllm"
+
+  - model_name: "myorg/embedding"
+    model_info:
+      mode: "embedding"
+      base_model: "some-embedding-model"
+    litellm_params:
+      model: "huggingface/some-embedding-model"
+      litellm_credential_name: "my-vllm"
+
+guardrails:
+  - guardrail_name: "pii-guard"
+    litellm_params:
+      guardrail: "presidio"
+      mode: "pre_call"
+    guardrail_info:
+      description: "PII masking"
+
+policies:
+  - policy_name: "global-baseline"
+    description: "Base guardrails for all requests"
+    guardrails_add: ["pii-guard"]

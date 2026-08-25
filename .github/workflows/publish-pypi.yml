@@ -43,8 +43,10 @@ jobs:
       - name: Sync dependencies (dev extras)
         run: uv sync --extra dev
 
-      - name: Start Postgres + LiteLLM proxy
-        working-directory: examples/docker-compose
+      # Test-owned proxy stack (tests/live/proxy) — never depends on the
+      # user-facing examples/docker-compose docs for the CI fixture.
+      - name: Start Postgres + LiteLLM proxy (test stack)
+        working-directory: tests/live/proxy
         env:
           LITELLM_MASTER_KEY: sk-ci-master-key-0123456789abcdef
           LITELLM_SALT_KEY: sk-ci-salt-key-0123456789abcdef
@@ -55,7 +57,7 @@ jobs:
           docker compose up -d postgres litellm
           # first boot runs DB migrations; wait for the healthcheck
           for i in $(seq 1 60); do
-            status=$(docker inspect -f '{{.State.Health.Status}}' litellm-as-code-litellm 2>/dev/null || true)
+            status=$(docker inspect -f '{{.State.Health.Status}}' litellm-as-code-tests-litellm 2>/dev/null || true)
             echo "attempt $i: $status"
             [ "$status" = "healthy" ] && break
             sleep 5
@@ -76,7 +78,7 @@ jobs:
 
       - name: Collect proxy logs on failure
         if: failure()
-        working-directory: examples/docker-compose
+        working-directory: tests/live/proxy
         run: docker compose logs --tail 200 litellm
 
   publish:

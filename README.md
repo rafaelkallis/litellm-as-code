@@ -180,6 +180,33 @@ options:
 
 Exit codes: `0` clean/no-op · `1` error · `2` diff present (`--dry-run` only).
 
+## Agent skill
+
+`litellm-as-code` ships an **agent skill** for operating a live proxy with an
+AI coding agent (Claude Code, VS Code/Copilot, Cursor, Codex, and 70+ other
+skills-compatible hosts). It teaches the agent how to write a spec, plan with
+`--dry-run`, and apply it — grounded in this repo's actual CLI contract,
+spec format, and drift model.
+
+The skill follows the **open Agent Skills spec** (agentskills.io) and lives in
+the repo at [`skills/litellm-as-code/`](skills/litellm-as-code/), so it's a
+portable folder any skills host can discover. Installing it uses the
+ecosystem-standard installer:
+
+```bash
+npx skills add rafaelkallis/litellm-as-code      # any of 73+ host dirs
+# or, if you use the GitHub CLI (public preview):
+gh skill install rafaelkallis/litellm-as-code litellm-as-code
+```
+
+Then ask your agent to do things like "add a user `@ops-lead` with
+`proxy_admin` role to the spec" or "plan and apply the team budget changes in
+`spec.yml`".
+
+The skill is **scoped as a feature of the tool** (kept in lockstep with the CLI
+in this repo — not a separate skills repo), and any `litellm-as-code`
+invocation in it mirrors the real CLI surface above.
+
 ## Docker
 
 Images are published to **GitHub Container Registry**, tagged with each release

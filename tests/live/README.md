@@ -8,14 +8,18 @@ documentation example does not.
 
 The specs back the **pytest integration suite** in `test_live_proxy.py` (same
 folder), which is a hard quality gate for publishing
-(`.github/workflows/publish-image.yml`). The suite is skipped unless
-`LITELLM_BASE_URL` + `LITELLM_API_KEY` are set:
+(`.github/workflows/*`). The suite is skipped unless `LITELLM_BASE_URL` +
+`LITELLM_API_KEY` are set.
+
+The suite uses its **own test-owned proxy stack** (`proxy/` here), never the
+user-facing `examples/docker-compose/` docs:
 
 ```bash
-cd examples/docker-compose
-docker compose up -d postgres litellm        # live proxy on :4000
+cd tests/live/proxy
+cp .env.example .env            # set LITELLM_MASTER_KEY (a throwaway key)
+docker compose up -d postgres litellm     # live proxy on :4000
 
-export LITELLM_BASE_URL=http://localhost:4000
+cd - && export LITELLM_BASE_URL=http://localhost:4000
 export LITELLM_API_KEY="$LITELLM_MASTER_KEY"
 
 uv run pytest tests/live -m 'integration and not slow' -v   # variants + mutation

@@ -135,8 +135,73 @@ Exit codes: `0` = clean/no diff (applied or no-op); `1` = error;
   documents the *same* admin REST endpoints & their quirks; when in doubt about
   an endpoint's exact payload/response shape or a litellm version's behavior,
   check its `litellm/` + `docs/` first.
-- Skills pattern: `github.com/BerriAI/litellm-skills` (flat `<skill>/SKILL.md`
-  layout, YAML frontmatter) if this repo ever ships agent skills.
+- Skills pattern (our own precedent): `github.com/BerriAI/litellm-skills`
+  (flat `<skill>/SKILL.md` layout, YAML frontmatter) was the first instance of
+  "agent skill for operating a LiteLLM proxy"; note however it predates the
+  open standard **and** the standard installer, so we deliberately do NOT
+  mirror its `install.sh`/symlink approach (see Agent skills & distribution below).
+
+## 8.1 Agent skills & distribution (research, dated 2026-08-25)
+
+Context: this project implements **Intent A — "the skill is a feature of the
+tool."** A single, in-repo `skills/litellm-as-code/` skill documents this CLI;
+it ships bundled in the wheel and is installed by our own subcommand. It is NOT
+a separate `*-skills` repo (that's Intent B — intentionally rejected).
+
+### Pointers on the standard (authoritative — read before authoring a skill)
+- **Skill format is the OPEN Agent Skills spec** — folders + `SKILL.md` (YAML
+  frontmatter + Markdown), optional `scripts/`, `references/`, `assets/`.
+  Stewarded at **agentskills.io**; reference implementation & validator:
+  `github.com/agentskills/agentskills` (`skills-ref validate`).
+- Spec details: `name` must match the folder; keep `SKILL.md` lean
+  (progressive disclosure — push depth into `references/`); **relative
+  `./` reference paths** (hosts resolve differently); description must be
+  keyword-rich ("Use when …") or agents won't discover it.
+
+### Distribution: what the industry settled on (as of 2026-08)
+- **The standard installer is `npx skills`** (`skills.sh`, `vercel-labs/skills`).
+  It clones any repo, discovers skills under `skills/` etc. (+ Claude Code
+  plugin-manifest compat), and writes to 73+ hosts' own directories
+  (project default `./<agent>/skills/`, global `~/<agent>/skills/`), default
+  symlink with `--copy` option. Fields you'll see on it: `-g/--global`,
+  `-a/--agent`, `-s/--skill`, `--copy`, `-y`, plus `skills list/update/remove`.
+- **`gh skill`** (GitHub CLI, public preview Apr 2026): same portable skills,
+  GitHub-native, target hosts incl. Copilot. Useful when consumers already use `gh`.
+- **Plugin marketplaces** (`.claude-plugin/plugin.json` / `.github/plugin.json`,
+  `/plugin marketplace add owner/repo`): the "app store" path — bundles
+  skills+agents+hooks, published via a manifest; the enterprise/multi-skill path.
+
+### Our stance (decision, not default)
+- **We do NOT build our own installer CLI.** `npx skills install` / `gh skill`
+  already solved install+update+per-host placement; reimplementing is
+  reinventing the wheel. Document in README how to consume the in-repo skill
+  via `npx skills add rafaelkallis/litellm-as-code` (and, if it ever matters,
+  `gh skill install`).
+- `npx skills` vs a hypothetical `skill install` subcommand, if ever discussed:
+  `npx skills` gives repo-drift/latest, `git`+network needed; a bundled
+  subcommand would give offline determinism pinned to the installed CLI version
+  but duplicates an existing standard tool — **prefer `npx skills`, do not add
+  the subcommand.**
+- Concrete tradeoff to remember (why bundling isn't automatically "give away"):
+  bundling the skill in `site-packages` does NOT make it auto-discoverable —
+  platforms only read their known dirs — so a wrapper is still needed; that is
+  precisely the gap `npx skills` fills, so lean on it.
+
+### Canonical skill layout for this repo
+```
+skills/litellm-as-code/
+├── SKILL.md            # name: litellm-as-code; operator-facing; spec-compliant
+├── references/
+│   ├── spec-format.md        # spec shapes, per-section, write-once secrets
+│   └── drift-and-apply.md    # identity/diff/converge, --dry-run, exit codes
+└── templates/
+    └── spec.yml              # editable starting spec
+```
+Keep the skill authoritative for **operators of a live proxy** ("add a user",
+"drift a model budget"). Any `litellm-as-code` invocation shown in the skill
+must match the real CLI surface (§6) — validate in CI if/when the skill ships.
+If we ever publish it beyond the repo (`gh skill`/marketplace garnish), it is an
+**additive** publish step.
 
 ## 9. Version pinning
 
