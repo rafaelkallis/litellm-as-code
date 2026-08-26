@@ -163,5 +163,4 @@ def reconcile_team_members(
 
 def _team_info(client: LiteLLMClient, team_id: str) -> dict[str, Any]:
     # GET /team/info?team_id=... returns {team_info: {...}} per provider research
-    payload = client._request("GET", "/team/info", params={"team_id": team_id})
-    return client.unwrap(payload, "team_info")
+    return client.get_team_info(team_id)

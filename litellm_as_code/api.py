@@ -111,6 +111,11 @@ class LiteLLMClient:
     def list_teams(self) -> list[dict[str, Any]]:
         return self._request("GET", "/v2/team/list").get("teams", [])
 
+    def get_team_info(self, team_id: str) -> dict[str, Any]:
+        """Full team row incl. `members_with_roles` (GET /team/info -> {team_info})."""
+        payload = self._request("GET", "/team/info", params={"team_id": team_id})
+        return self.unwrap(payload, "team_info")
+
     def create_team(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/team/new", json=payload)
 

@@ -7,7 +7,9 @@ import os
 import sys
 
 from . import __version__
-from .reconciler import run
+from .api import LiteLLMClient
+from .exporter import export_spec
+from .reconciler import reconcile
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -15,7 +17,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="litellm-as-code",
         description=(
             "Declarative runtime-state management for a LiteLLM proxy: "
-            "reconcile users/teams/keys/credentials/models from a YAML spec."
+            "reconcile users/teams/keys/credentials/models from a YAML spec, "
+            "or export a live proxy to a spec."
         ),
     )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -49,14 +52,70 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+def build_export_parser() -> argparse.ArgumentParser:
+    """`litellm-as-code export [OUT]`: read a live proxy and write a spec."""
+    p = argparse.ArgumentParser(
+        prog="litellm-as-code export",
+        description=(
+            "Read the live LiteLLM proxy's runtime (DB-backed) state and write "
+            "a declarative spec that reproduces it. Secrets are never read "
+            "back (write-once), so credential_values/key come out as "
+            "placeholders to fill in."
+        ),
+    )
+    p.add_argument(
+        "out",
+        nargs="?",
+        default=os.environ.get("LITELLM_SPEC", "spec.yml"),
+        help="path to write the exported spec (env: LITELLM_SPEC, default spec.yml)",
+    )
+    p.add_argument(
+        "--base-url",
+        default=os.environ.get("LITELLM_BASE_URL") or os.environ.get("BASE_URL"),
+        help="LiteLLM proxy base URL (env: LITELLM_BASE_URL)",
+    )
+    p.add_argument(
+        "--api-key",
+        default=os.environ.get("LITELLM_API_KEY") or os.environ.get("API_KEY"),
+        help="admin API key (env: LITELLM_API_KEY)",
+    )
+    return p
 
-    if not args.base_url:
+
+def _require_credentials(base_url: str | None, api_key: str | None) -> bool:
+    if not base_url:
         print("error: --base-url (or LITELLM_BASE_URL) is required", file=sys.stderr)
-        return 1
-    if not args.api_key:
+        return False
+    if not api_key:
         print("error: --api-key (or LITELLM_API_KEY) is required", file=sys.stderr)
+        return False
+    return True
+
+
+def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    args = list(argv)
+
+    # `litellm-as-code export [OUT]` — a read-only subcommand distinct from
+    # the default reconcile flow (which treats the first positional as a spec).
+    if args and args[0] == "export":
+        ep = build_export_parser()
+        eargs = ep.parse_args(args[1:])
+        if not _require_credentials(eargs.base_url, eargs.api_key):
+            return 1
+        try:
+            client = LiteLLMClient(eargs.base_url, eargs.api_key)
+            export_spec(client, eargs.out)
+            print(f"exported {eargs.out}", file=sys.stderr)
+            return 0
+        except Exception as e:  # noqa: BLE001 - top-level CLI error surfacing
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+
+    args = build_parser().parse_args(args)
+
+    if not _require_credentials(args.base_url, args.api_key):
         return 1
 
     try:
