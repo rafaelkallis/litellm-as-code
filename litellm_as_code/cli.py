@@ -27,17 +27,23 @@ _QUIET_HELP = (
 )
 
 
+def _add_quiet_flag(p: argparse.ArgumentParser) -> None:
+    """Add the shared `--quiet` flag; keeps the notice-suppression option in one
+    place across the reconcile and export parsers."""
+    p.add_argument(
+        "--quiet",
+        action="store_true",
+        help=_QUIET_HELP,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="litellm-as-code",
         description=_DESCRIPTION,
     )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    p.add_argument(
-        "--quiet",
-        action="store_true",
-        help=_QUIET_HELP,
-    )
+    _add_quiet_flag(p)
 
     p.add_argument(
         "spec",
@@ -79,11 +85,7 @@ def build_export_parser() -> argparse.ArgumentParser:
             "placeholders to fill in."
         ),
     )
-    p.add_argument(
-        "--quiet",
-        action="store_true",
-        help=_QUIET_HELP,
-    )
+    _add_quiet_flag(p)
     p.add_argument(
         "out",
         nargs="?",

@@ -7,6 +7,7 @@ stderr banner (so it never contaminates stdout consumers like `export`).
 from __future__ import annotations
 
 import sys
+from typing import TextIO
 
 from . import __version__
 from ._meta import AUTHOR, LICENSE
@@ -17,7 +18,7 @@ def notice() -> str:
     return f"litellm-as-code {__version__} — by {AUTHOR}, licensed under {LICENSE}"
 
 
-def print_notice(*, file=None) -> None:
+def print_notice(*, file: TextIO | None = None) -> None:
     """Print the notice to stderr (so stdout stays machine-consumable).
 
     ``file`` is resolved at call time (never as a default-arg) so the notice

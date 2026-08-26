@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import re
 import tomllib
+from pathlib import Path
 
 from litellm_as_code import __version__
-from litellm_as_code import cli
 from litellm_as_code.cli import main
 from litellm_as_code.notice import notice, print_notice
 
@@ -24,8 +24,13 @@ _NOTICE_RE = re.compile(
 )
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
 def _read_pyproject() -> dict:
-    with open("pyproject.toml", "rb") as f:
+    """Load pyproject.toml resolved from this file's repo root, so the test is
+    robust under any pytest invocation/cwd."""
+    with open(_REPO_ROOT / "pyproject.toml", "rb") as f:
         return tomllib.load(f)
 
 
