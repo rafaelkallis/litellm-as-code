@@ -5,7 +5,8 @@ description: >
   keys, credentials, models, budgets, organizations, guardrails, policies)
   declaratively using litellm-as-code. Use when the user wants to add or modify
   proxy users/keys/credentials/models, reconcile a YAML spec against a proxy,
-  plan or apply changes, or understand the drift/diff model and exit codes.
+  plan or apply changes, export an existing proxy's state into a spec, or
+  understand the drift/diff model and exit codes.
 license: MIT
 metadata:
   author: Rafael Kallis
@@ -33,6 +34,8 @@ spec against the live proxy and applies only the deltas.
 - The user has (or should have) a YAML spec and wants to plan or apply it.
 - The user is diagnosing why the live proxy does not match a spec (drift).
 - The user is writing a spec and wants the exact per-resource shape.
+- The user has an existing (already configured) proxy and wants to adopt
+  `litellm-as-code` — export the live state into a spec.
 
 ## How to use
 
@@ -79,6 +82,22 @@ spec against the live proxy and applies only the deltas.
 5. **Interpret the result.** Second run is a no-op (idempotent). If a resource
    was created, the reconciler prints the event and, for keys, the generated key.
 
+### Exporting an existing proxy (adoption)
+
+To turn a **live, already-configured** proxy into a spec:
+
+```bash
+litellm-as-code export spec.yml --base-url "$LITELLM_BASE_URL" --api-key "$LITELLM_API_KEY"
+```
+
+This is **read-only** — it never applies anything. It emits every *comparable*
+field (reconcile-order sections) and **never emits secrets**:
+`credential_values` come out empty with an inline `# <fill: …>` comment (fill
+before applying), and `virtual_keys[].key` is omitted (re-apply mints a fresh
+key). Runtime metrics and server-injected defaults never appear. The exported
+file is validated by the same `load_spec` pipeline and re-applying it to the
+source proxy is a no-op. See [spec-format](./references/spec-format.md).
+
 ## Key invariants to respect
 
 - **Never read secrets back or treat them as comparable.** The API returns
@@ -97,11 +116,13 @@ spec against the live proxy and applies only the deltas.
 
 ```
 litellm-as-code <spec> [--base-url URL] [--api-key KEY] [--dry-run] [--prune]
+litellm-as-code export [OUT] [--base-url URL] [--api-key KEY]   # read-only
 ```
 
 Env aliases: `LITELLM_SPEC` · `LITELLM_BASE_URL`/`BASE_URL` ·
 `LITELLM_API_KEY`/`API_KEY`. `--prune` is reserved and effectively a no-op
-today (additive reconcile only).
+today (additive reconcile only). `export` exits `0` on success, `1` on error,
+and applies nothing.
 
 ## References
 

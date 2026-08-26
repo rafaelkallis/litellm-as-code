@@ -164,3 +164,33 @@ policies:
 - Unknown **per-resource** keys are non-fatal warnings; entries pass through
   verbatim (nested opaque payloads like `credential_values`, `litellm_params`,
   `model_info` are deliberately un-schematized).
+
+## Exporting a live proxy to a spec
+
+`litellm-as-code export [OUT]` is the inverse direction: it **reads** the live
+admin API and writes a spec that reproduces the deployment (read-only, never
+applies). Fed back to `litellm-as-code <OUT>`, the export is a clean no-op on
+the source proxy.
+
+Fidelity rules the export follows (same COMPARABLE model as the reconcilers):
+
+- **Comparable fields only** — runtime metrics (`spend`, `status`,
+  `budget_reset_at`, timestamps) and server-injected defaults
+  (`default_user_id`, `tpm_limit_type`, `rpm_limit_type`, inferred `mode`)
+  never appear.
+- **Secrets are never re-read** (write-once):
+  - `credentials[].credential_values` is emitted empty with an inline
+    `# <fill: credential_values>` comment (plus a WARN) — the API returns
+    masked values, so the operator fills them in before applying.
+  - `virtual_keys[].key` is omitted (the API stores only the hashed token) —
+    re-applying mints a fresh key; a WARN is emitted.
+  - `models[].model_info.id` (server-minted) is omitted.
+- **Costs convert back** to `input_cost_per_million_tokens` /
+  `output_cost_per_million_tokens` (the API reports per-token).
+- **Config-file-only rows are skipped** — guardrails/policies without a DB id
+  (`definition_location == "config"`) are startup-only and out of scope.
+- **Members un-nest**: org members (`members`) → `members_with_roles`, team
+  members are read via `GET /team/info` → `members_with_roles`.
+- Sections with no rows are omitted; identities (`user_id`, `team_id`,
+  `organization_id`, `key_alias`, `credential_name`, `model_name`,
+  `budget_id`) are preserved so memberships still resolve on re-apply.

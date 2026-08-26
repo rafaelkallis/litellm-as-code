@@ -63,6 +63,22 @@ returning non-zero) — it is **not** an error, just "there is work to do."
 Models before credentials matters: a credential's `model_id` must reference an
 existing model (`POST /credentials` 404s otherwise). Acyclic, single-target.
 
+## Export (reverse direction, read-only)
+
+`litellm-as-code export [OUT]` interrogates the live proxy and writes a spec
+that reproduces it. The fidelity rules are the exact counterpart of the
+identity/drift table above:
+
+- Only **comparable** fields are exported; runtime metrics and
+  server-injected defaults are never adopted into desired state.
+- **Secrets are write-once and never re-read**: `credential_values` are masked
+  by the API and raw keys are stored only as hashes, so the export emits
+  empty/fill-in placeholders and omits `key`. Re-applying an export produces a
+  **behavior-equivalent** deployment, not a byte-identical one (keys are
+  freshly minted; credential values are re-entered by the operator).
+- The exported file passes the same `load_spec` validation as a hand-written
+  spec, and re-applying it to the source proxy is a clean no-op.
+
 ## Proxy quirks to respect
 
 - **Nested read envelopes** the API returns, which the reconciler unwraps:
