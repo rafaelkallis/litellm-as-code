@@ -202,7 +202,7 @@ policies:
 ## CLI
 
 ```
-usage: litellm-as-code [--version] [--base-url URL] [--api-key KEY]
+usage: litellm-as-code [--version] [--quiet] [--base-url URL] [--api-key KEY]
                        [--dry-run] [--prune] [spec]
 
 positional:
@@ -213,11 +213,19 @@ options:
   --api-key KEY          admin API key (env: LITELLM_API_KEY / API_KEY)
   --dry-run              print changes without applying; exit 2 if any
   --prune                (reserved) delete live resources absent from spec
+  --quiet                suppress the author & license notice (for scripting);
+                         does not suppress command output
 
 Export mode (read-only):
-  litellm-as-code export [OUT] [--base-url URL] [--api-key KEY]
+  litellm-as-code export [OUT] [--base-url URL] [--api-key KEY] [--quiet]
   OUT                    path to write the exported spec (default spec.yml)
 ```
+
+Every invocation prints a short **author & license notice** to stderr before
+doing anything (e.g. `litellm-as-code 0.6.0 — by Rafael Kallis, licensed
+under MIT`). It is stderr-only so stdout stays machine-consumable (e.g. for
+`export`); pass `--quiet` to suppress it in scripts. `--version` /
+`--help` are unaffected (stdlib argparse action).
 
 Exit codes: `0` clean/no-op · `1` error · `2` diff present (`--dry-run` only).
 `export` exits `0` on success and `1` on error (it never applies anything).

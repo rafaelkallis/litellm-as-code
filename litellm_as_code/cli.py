@@ -9,19 +9,35 @@ import sys
 from . import __version__
 from .api import LiteLLMClient
 from .exporter import export_spec
+from .notice import print_notice
 from .reconciler import run
+
+
+_DESCRIPTION = (
+    "litellm-as-code (Rafael Kallis, MIT license): declarative runtime-state "
+    "management for a LiteLLM proxy — reconcile "
+    "users/teams/keys/credentials/models from a YAML spec, or export a live "
+    "proxy to a spec."
+)
+
+
+_QUIET_HELP = (
+    "suppress the author & license notice (for scripting); this does not "
+    "suppress command output"
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="litellm-as-code",
-        description=(
-            "Declarative runtime-state management for a LiteLLM proxy: "
-            "reconcile users/teams/keys/credentials/models from a YAML spec, "
-            "or export a live proxy to a spec."
-        ),
+        description=_DESCRIPTION,
     )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    p.add_argument(
+        "--quiet",
+        action="store_true",
+        help=_QUIET_HELP,
+    )
 
     p.add_argument(
         "spec",
@@ -64,6 +80,11 @@ def build_export_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--quiet",
+        action="store_true",
+        help=_QUIET_HELP,
+    )
+    p.add_argument(
         "out",
         nargs="?",
         default=os.environ.get("LITELLM_SPEC", "spec.yml"),
@@ -102,6 +123,8 @@ def main(argv: list[str] | None = None) -> int:
     if args and args[0] == "export":
         ep = build_export_parser()
         eargs = ep.parse_args(args[1:])
+        if not eargs.quiet:
+            print_notice()
         if not _require_credentials(eargs.base_url, eargs.api_key):
             return 1
         try:
@@ -114,6 +137,9 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     args = build_parser().parse_args(args)
+
+    if not args.quiet:
+        print_notice()
 
     if not _require_credentials(args.base_url, args.api_key):
         return 1
