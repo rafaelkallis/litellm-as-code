@@ -9,7 +9,7 @@ import sys
 from . import __version__
 from .api import LiteLLMClient
 from .exporter import export_spec
-from .reconciler import reconcile
+from .reconciler import run
 
 
 def build_parser() -> argparse.ArgumentParser:

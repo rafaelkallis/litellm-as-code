@@ -79,5 +79,7 @@ def test_export_defaults_to_spec_yml(monkeypatch, tmp_path):
     assert rc == 0
     out = tmp_path / "spec.yml"
     assert out.is_file()
-    # An empty proxy exports only the header comment (valid YAML, no sections).
-    assert "litellm-as-code — exported" in out.read_text()
+    text = out.read_text()
+    assert "litellm-as-code — exported" in text
+    # An empty proxy exports an explicit empty mapping that load_spec accepts.
+    assert load_spec(out) == {}

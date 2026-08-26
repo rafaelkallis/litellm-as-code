@@ -177,6 +177,65 @@ def test_export_model_costs_back_to_per_million(converged, tmp_path):
     assert model["litellm_params"]["litellm_credential_name"] == "c1"
 
 
+def test_export_does_not_adopt_inferred_mode(converged, tmp_path):
+    """LiteLLM infers `mode`; the export must not adopt it as desired state
+    (no provenance on the read response -> perpetual drift; AGENTS.md §4)."""
+    client, fake = converged
+    # Emulate the real proxy injecting an inferred mode on read.
+    fake.models["org/chat"]["model_info"]["mode"] = "completion"
+    exported = build_spec(client)
+    mi = exported["models"][0]["model_info"]
+    assert "mode" not in mi
+    # base_model / costs still exported
+    assert mi["base_model"] == "b1"
+
+
+def test_export_cost_prefers_authoritative_per_million(converged, tmp_path):
+    """Real-proxy models can report an authoritative non-zero per-million value
+    alongside a recomputed per-token 0 (with STORE_MODEL_IN_DB the cost table
+    isn't loaded). The export must keep the per-million value, not the 0."""
+    client, fake = converged
+    m = fake.models["org/chat"]
+    m["model_info"]["input_cost_per_million_tokens"] = 3.0
+    m["model_info"]["input_cost_per_token"] = 0  # recomputed, table not loaded
+    exported = build_spec(client)
+    mi = exported["models"][0]["model_info"]
+    assert mi["input_cost_per_million_tokens"] == pytest.approx(3.0)
+
+
+def test_export_guardrail_masked_params_are_stripped(converged, tmp_path):
+    """Guardrail litellm_params with write-once secrets come back masked; the
+    export must strip them (with a WARN) instead of persisting masked values."""
+    client, fake = converged
+    # Emulate /v2/guardrails/list masking api_key & vertex_credentials.
+    fake.guardrails["pii-guard"]["litellm_params"] = {
+        "guardrail": "presidio",
+        "mode": "pre_call",
+        "api_key": "sk-12****",
+        "vertex_credentials": "{sen****}",
+    }
+    exported = build_spec(client)
+    g = next(x for x in exported["guardrails"] if x["guardrail_name"] == "pii-guard")
+    assert g["litellm_params"] == {"guardrail": "presidio", "mode": "pre_call"}
+    assert "api_key" not in g["litellm_params"]
+    assert "vertex_credentials" not in g["litellm_params"]
+
+
+def test_export_team_info_failure_aborts(converged, tmp_path):
+    """If a team's memberships can't be read, the export must FAIL rather than
+    emit an empty members list (which re-apply would treat as delete-all)."""
+    client, fake = converged
+    out = tmp_path / "export.yml"
+
+    def _boom(team_id):
+        raise RuntimeError("membership read failed")
+
+    client.get_team_info = _boom  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="membership read failed"):
+        export_spec(client, out)
+    assert not out.exists()  # no partial/destructive snapshot written
+
+
 def test_export_team_members_from_team_info(converged, tmp_path):
     """/team/info member roles surface as team.members_with_roles."""
     client, fake = converged
@@ -218,10 +277,22 @@ def test_export_skips_config_only_guardrails_and_policies(converged):
 
 
 def test_export_skips_noop_sections_on_empty_proxy():
-    """A fresh proxy with no DB rows exports a minimal (section-less) spec."""
+    """A fresh proxy with no DB rows exports an empty (but valid) spec."""
     client, fake = make_fake_client()
     exported = build_spec(client)
     assert exported == {}
+
+
+def test_export_empty_proxy_file_passes_loader(tmp_path):
+    """An empty proxy exports an explicit empty mapping that load_spec accepts
+    (the commented-only-file issue is gone)."""
+    client, fake = make_fake_client()
+    out = tmp_path / "export.yml"
+    spec = export_spec(client, out)
+    assert spec == {}
+    # The self-check inside export_spec already ran load_spec; be explicit.
+    assert load_spec(out) == {}
+    assert out.read_text().rstrip().endswith("{}")
 
 
 def test_export_excludes_runtime_metrics(converged, tmp_path):

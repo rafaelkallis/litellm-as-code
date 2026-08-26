@@ -83,6 +83,16 @@ def test_export_then_reapply_is_noop(tmp_path):
     for cred in data.get("credentials", []):
         # values are masked; only an empty marker (or absent) is exported
         assert not cred.get("credential_values")
+    # Inferred `mode` must never be adopted into desired state (AGENTS.md §4).
+    for model in data.get("models", []):
+        assert "mode" not in model.get("model_info", {})
+    # Guardrail write-once params come back masked; they must not be persisted.
+    for guardrail in data.get("guardrails", []):
+        params = guardrail.get("litellm_params", {})
+        for k in params:
+            assert not any(
+                kw in k.lower() for kw in ("key", "token", "secret", "password", "credential")
+            ), f"masked guardrail param exported: {k}"
 
     # 3) re-apply the export — must be clean
     apply2 = _run_cli(str(out))

@@ -123,7 +123,11 @@ contain them. In their place:
   `# <fill: credential_values>` comment and a WARN — fill it in before
   applying (the API returns masked values only);
 - `virtual_keys[].key` is omitted — re-applying mints a fresh key;
-- `models[].model_info.id` (server-minted) is omitted.
+- `guardrails[].litellm_params` secrets (`api_key`, `headers`, …) are masked
+  on read and stripped from the export (WARN emitted); non-secret params
+  (`guardrail`, `mode`, `default_on`, …) are kept;
+- `models[].model_info.id` (server-minted) and `mode` (server-inferred) are
+  omitted.
 
 The exported file is validated through the same `load_spec` pipeline as a
 hand-written spec, and re-applying it to the source proxy is a clean no-op.

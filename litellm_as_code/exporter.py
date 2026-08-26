@@ -134,7 +134,12 @@ def _export_budgets(client: LiteLLMClient) -> list[dict[str, Any]]:
 
 # -- models ----------------------------------------------------------------
 
-_MODEL_INFO_KEYS = ["mode", "base_model", "tier"]
+# `mode` is deliberately NOT exported: LiteLLM infers it from the provider /
+# base model and can inject it on read even when the operator never set it
+# (AGENTS.md §4 / resources/models.py). There is no provenance on the read
+# response, so an inferred mode would be adopted into desired state and cause
+# perpetual drift. Only fields the operator can actually set are exported.
+_MODEL_INFO_KEYS = ["base_model", "tier"]
 _MODEL_LITELLM_KEYS = ["custom_llm_provider", "model", "litellm_credential_name"]
 
 
@@ -176,23 +181,30 @@ def _export_model_costs(
     model_info: dict[str, Any], mi: dict[str, Any], lp: dict[str, Any]
 ) -> None:
     """Carry costs back to per-million (spec convention), inverse of the
-    reconciler's ÷1e6. The proxy may report the same cost per-token and/or
-    per-million under model_info or litellm_params; per-token wins (it is the
-    authoritative stored value; the per-million echo can be 0 for DB-backed
-    models whose cost table isn't loaded)."""
+    reconciler's ÷1e6.
+
+    Mirrors the real-proxy behaviour in `resources/models._comparable_model`:
+    with STORE_MODEL_IN_DB the server reports the authoritative per-million
+    value under model_info (the DB columns) AND a recomputed per-token value
+    that can be 0 for DB-backed models whose cost table isn't loaded. So a
+    present per-million value is exported unchanged; only a per-token-only
+    fallback is multiplied back, and only when that per-token value is
+    non-zero (a 0 per-token with a real per-million echo must not win)."""
     for per_token, per_million in (
         ("input_cost_per_token", "input_cost_per_million_tokens"),
         ("output_cost_per_token", "output_cost_per_million_tokens"),
     ):
-        v = mi.get(per_token)
-        if v is None:
-            v = lp.get(per_token)
-        if v is None:
-            v = mi.get(per_million)
-        if v is None:
-            v = lp.get(per_million)
-        if isinstance(v, (int, float)):
-            model_info[per_million] = v * 1_000_000.0
+        per_million_val = mi.get(per_million)
+        if per_million_val is None:
+            per_million_val = lp.get(per_million)
+        if isinstance(per_million_val, (int, float)):
+            model_info[per_million] = per_million_val
+            continue
+        per_token_val = mi.get(per_token)
+        if per_token_val is None:
+            per_token_val = lp.get(per_token)
+        if isinstance(per_token_val, (int, float)) and per_token_val:
+            model_info[per_million] = per_token_val * 1_000_000.0
 
 
 # -- credentials -----------------------------------------------------------
@@ -295,12 +307,15 @@ def _export_teams(client: LiteLLMClient) -> list[dict[str, Any]]:
 
 def _export_team_members(client: LiteLLMClient, team_id: str) -> list[dict[str, Any]]:
     """members_with_roles come from GET /team/info (the /v2/team/list rows do
-    not carry the member list)."""
-    try:
-        info = client.get_team_info(team_id)
-    except Exception as e:  # noqa: BLE001 — a team-info 404 shouldn't kill the export
-        _emit_warn("teams", team_id, f"could not read members: {e}")
-        return []
+    not carry the member list).
+
+    A failure here ABORTS the export: the client already retries transient
+    reads (eventual consistency), so a remaining error means the membership is
+    genuinely unreadable. Returning an empty list instead would be read as
+    ``members_with_roles: []`` on re-apply — deleting every member from the
+    team — a destructive partial snapshot.
+    """
+    info = client.get_team_info(team_id)
     members = info.get("members_with_roles") or []
     out: list[dict[str, Any]] = []
     for m in members:
@@ -339,6 +354,23 @@ def _export_keys(client: LiteLLMClient) -> list[dict[str, Any]]:
 
 _GUARDRAIL_KEYS = ["guardrail_name", "litellm_params", "guardrail_info"]
 
+# `litellm_params` may carry write-once secrets (api_key, headers, ...) that
+# the API masks on read (`_get_masked_values`). Mirror the API's sensitive-key
+# keywords so we strip masked values instead of persisting them as desired
+# state (they'd be sent on re-apply and yield a nonfunctional guardrail).
+_GUARDRAIL_SENSITIVE_KEYWORDS = (
+    "token",
+    "key",
+    "secret",
+    "credential",
+    "password",
+    "passwd",
+)
+
+
+def _is_sensitive_value(value: Any) -> bool:
+    return isinstance(value, str) and "*" in value
+
 
 def _export_guardrails(client: LiteLLMClient) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
@@ -352,9 +384,46 @@ def _export_guardrails(client: LiteLLMClient) -> list[dict[str, Any]]:
             _emit_warn("guardrails", str(name), "skipping row without guardrail_name")
             continue
         entry = _pick(g, _GUARDRAIL_KEYS)
+        params = entry.get("litellm_params") or {}
+        if isinstance(params, dict):
+            filtered, masked = _strip_masked_params(params)
+            if filtered:
+                entry["litellm_params"] = filtered
+            elif "litellm_params" in entry:
+                del entry["litellm_params"]
+            if masked:
+                _emit_warn(
+                    "guardrails",
+                    name,
+                    f"masked litellm_params value(s) {sorted(masked)} are not "
+                    "exported; fill them in manually (write-once)",
+                )
         if entry:
             out.append(_empty_collections(entry))
     return out
+
+
+def _strip_masked_params(
+    params: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    """Return (clean_params, masked_keys). Drops values that are provably
+    masked (contain `*`) or whose key the API would mask, keeping only
+    non-secret configuration the operator can re-declare."""
+    clean: dict[str, Any] = {}
+    masked: list[str] = []
+    for k, v in params.items():
+        key_is_sensitive = any(
+            kw in k.lower() for kw in _GUARDRAIL_SENSITIVE_KEYWORDS
+        )
+        if key_is_sensitive:
+            if v is not None:
+                masked.append(k)
+            continue
+        if isinstance(v, str) and _is_sensitive_value(v):
+            masked.append(k)
+            continue
+        clean[k] = v
+    return clean, masked
 
 
 # -- policies --------------------------------------------------------------
@@ -426,8 +495,8 @@ def export_spec(client: LiteLLMClient, out_path: str | Path) -> dict[str, Any]:
     """
     spec = build_spec(client)
 
-    # Dump section-by-section so per-section comment insertion stays scoped
-    # and a section never ends up indented under its predecessor.
+    # Dump per-section so per-section comment insertion stays scoped and a
+    # section never ends up indented under its predecessor.
     blocks: list[str] = []
     for section in _SECTIONS:
         entries = spec.get(section)
@@ -449,12 +518,13 @@ def export_spec(client: LiteLLMClient, out_path: str | Path) -> dict[str, Any]:
             )
         blocks.append(block)
 
-    Path(out_path).write_text(_HEADER + "\n".join(blocks), encoding="utf-8")
+    # An empty proxy exports an explicit empty mapping `{}` (parses to a dict,
+    # so the self-check below stays meaningful and the file is re-applyable).
+    body = "\n".join(blocks) if blocks else "{}\n"
+    Path(out_path).write_text(_HEADER + body, encoding="utf-8")
 
-    # Self-check: the generated file must pass the same spec validator as a
-    # hand-written spec, so a broken export is caught before the operator
-    # applies it. An empty proxy exports only the header comment (a comment-only
-    # file is `None` YAML), so skip the check when there are no sections.
-    if spec:
-        load_spec(out_path)
+    # Self-check (always): the generated file must pass the same spec validator
+    # as a hand-written spec, so a broken export is caught before the operator
+    # applies it.
+    load_spec(out_path)
     return spec

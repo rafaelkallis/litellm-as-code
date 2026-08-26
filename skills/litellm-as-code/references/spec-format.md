@@ -177,20 +177,31 @@ Fidelity rules the export follows (same COMPARABLE model as the reconcilers):
 - **Comparable fields only** — runtime metrics (`spend`, `status`,
   `budget_reset_at`, timestamps) and server-injected defaults
   (`default_user_id`, `tpm_limit_type`, `rpm_limit_type`, inferred `mode`)
-  never appear.
+  never appear. In particular `models[].model_info.mode` is **not** exported:
+  LiteLLM infers it and can inject it on read, so adopting it would create
+  perpetual drift.
 - **Secrets are never re-read** (write-once):
   - `credentials[].credential_values` is emitted empty with an inline
     `# <fill: credential_values>` comment (plus a WARN) — the API returns
     masked values, so the operator fills them in before applying.
   - `virtual_keys[].key` is omitted (the API stores only the hashed token) —
     re-applying mints a fresh key; a WARN is emitted.
+  - `guardrails[].litellm_params` secrets (`api_key`, `headers`, …) come back
+    masked — the export strips them and WARNs (only non-secret params such as
+    `guardrail`/`mode`/`default_on` are kept).
   - `models[].model_info.id` (server-minted) is omitted.
 - **Costs convert back** to `input_cost_per_million_tokens` /
-  `output_cost_per_million_tokens` (the API reports per-token).
+  `output_cost_per_million_tokens` (the API reports per-token). A present
+  per-million value is kept unchanged (authoritative); only a per-token-only
+  fallback is multiplied by 1e6, and a `0` per-token never masks a real
+  per-million value.
 - **Config-file-only rows are skipped** — guardrails/policies without a DB id
   (`definition_location == "config"`) are startup-only and out of scope.
 - **Members un-nest**: org members (`members`) → `members_with_roles`, team
-  members are read via `GET /team/info` → `members_with_roles`.
-- Sections with no rows are omitted; identities (`user_id`, `team_id`,
-  `organization_id`, `key_alias`, `credential_name`, `model_name`,
-  `budget_id`) are preserved so memberships still resolve on re-apply.
+  members are read via `GET /team/info` → `members_with_roles`. If a team's
+  memberships can't be read the export **aborts** (returning an empty list
+  would be applied as "delete all members").
+- Sections with no rows are omitted (an empty proxy exports a valid empty
+  mapping); identities (`user_id`, `team_id`, `organization_id`, `key_alias`,
+  `credential_name`, `model_name`, `budget_id`) are preserved so memberships
+  still resolve on re-apply.
