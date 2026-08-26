@@ -451,7 +451,10 @@ def export_spec(client: LiteLLMClient, out_path: str | Path) -> dict[str, Any]:
 
     Path(out_path).write_text(_HEADER + "\n".join(blocks), encoding="utf-8")
 
-    # Self-check: the generated file must round-trip through load_spec so a
-    # broken export is caught before the operator applies it.
-    load_spec(out_path)
+    # Self-check: the generated file must pass the same spec validator as a
+    # hand-written spec, so a broken export is caught before the operator
+    # applies it. An empty proxy exports only the header comment (a comment-only
+    # file is `None` YAML), so skip the check when there are no sections.
+    if spec:
+        load_spec(out_path)
     return spec

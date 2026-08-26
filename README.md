@@ -73,7 +73,7 @@ A prebuilt OCI image is also published to GHCR (see [Docker](#docker)).
 
 > First `uvx` run downloads `litellm-as-code` and its (minimal) dependencies
 > once, then caches them. Pin the version for reproducible CI runs with
-> `uvx --from litellm-as-code==0.5.0 litellm-as-code ...`.
+> `uvx --from litellm-as-code==0.6.0 litellm-as-code ...`.
 
 ## Quickstart
 
