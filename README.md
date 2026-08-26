@@ -73,7 +73,7 @@ A prebuilt OCI image is also published to GHCR (see [Docker](#docker)).
 
 > First `uvx` run downloads `litellm-as-code` and its (minimal) dependencies
 > once, then caches them. Pin the version for reproducible CI runs with
-> `uvx --from litellm-as-code==0.5.0 litellm-as-code ...`.
+> `uvx --from litellm-as-code==0.6.0 litellm-as-code ...`.
 
 ## Quickstart
 
@@ -94,6 +94,43 @@ uvx litellm-as-code spec.yml
 
 No local state file is written — the live proxy is the single source of truth
 for what exists and what drifted.
+
+## Exporting an existing proxy
+
+Already have a configured proxy and want to adopt
+`litellm-as-code`? The read-only `export` subcommand interrogates the live
+admin API and writes a re-applyable spec that reproduces the deployment:
+
+```bash
+uvx litellm-as-code export spec.yml --base-url "$LITELLM_BASE_URL" --api-key "$LITELLM_API_KEY"
+# exported spec.yml
+```
+
+What you get:
+
+- every **comparable** (manageable) field across `budgets`, `models`,
+  `credentials`, `organizations` (+ members), `users`, `teams` (+ members),
+  `virtual_keys`, `guardrails`, `policies` — in the reconciler's fixed
+  converge order;
+- costs expressed back in per-million tokens (the spec convention);
+- **nothing** that is write-once or read-only. Runtime metrics (`spend`,
+  `status`, `budget_reset_at`, …) and server-injected defaults never appear.
+
+**Secrets are never re-read from the API** (write-once), so the export cannot
+contain them. In their place:
+
+- `credentials[].credential_values` is emitted empty (`{}`) with an inline
+  `# <fill: credential_values>` comment and a WARN — fill it in before
+  applying (the API returns masked values only);
+- `virtual_keys[].key` is omitted — re-applying mints a fresh key;
+- `guardrails[].litellm_params` secrets (`api_key`, `headers`, …) are masked
+  on read and stripped from the export (WARN emitted); non-secret params
+  (`guardrail`, `mode`, `default_on`, …) are kept;
+- `models[].model_info.id` (server-minted) and `mode` (server-inferred) are
+  omitted.
+
+The exported file is validated through the same `load_spec` pipeline as a
+hand-written spec, and re-applying it to the source proxy is a clean no-op.
 
 ## Example spec
 
@@ -176,9 +213,14 @@ options:
   --api-key KEY          admin API key (env: LITELLM_API_KEY / API_KEY)
   --dry-run              print changes without applying; exit 2 if any
   --prune                (reserved) delete live resources absent from spec
+
+Export mode (read-only):
+  litellm-as-code export [OUT] [--base-url URL] [--api-key KEY]
+  OUT                    path to write the exported spec (default spec.yml)
 ```
 
 Exit codes: `0` clean/no-op · `1` error · `2` diff present (`--dry-run` only).
+`export` exits `0` on success and `1` on error (it never applies anything).
 
 ## Agent skill
 

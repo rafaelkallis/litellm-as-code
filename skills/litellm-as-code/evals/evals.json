@@ -36,6 +36,18 @@
         "The agent does not send a key value on any update and does not re-read secret material",
         "If a dry-run is shown, its exit code is 0 (no diff) or 2 only when a comparable diff exists"
       ]
+    },
+    {
+      "id": 4,
+      "prompt": "I have an existing LiteLLM proxy I've been configuring by hand. Generate a spec file from it so I can adopt litellm-as-code.",
+      "expected_output": "The agent runs `litellm-as-code export <out>` against the live proxy and produces a spec covering the reconcilable sections.",
+      "files": ["skills/litellm-as-code/templates/spec.yml"],
+      "assertions": [
+        "The agent uses `litellm-as-code export` (read-only) and does not try to read secrets back from the API",
+        "The exported spec uses the per-section shapes from spec-format.md (users/teams/keys/credentials/models/... in reconcile order)",
+        "credential_values come out as a fill-in placeholder and no raw key value is emitted — the agent explains keys will be re-minted on re-apply",
+        "The agent does not emit runtime metrics (spend, updated_at, status) into the desired spec"
+      ]
     }
   ]
 }
