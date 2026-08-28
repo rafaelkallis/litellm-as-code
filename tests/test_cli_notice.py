@@ -159,10 +159,32 @@ def test_malformed_export_still_prints_notice(capsys):
 
 def test_help_and_version_do_not_print_notice(capsys):
     """`--help` / `--version` are argparse actions that print & exit before
-    main() can finish; docs promise they're unaffected by the notice."""
-    for argv in (["--help"], ["--version"], ["export", "--help"]):
+    main() can finish; docs promise they're unaffected by the notice. Both the
+    reconcile and export parsers define `--version`."""
+    for argv in (["--help"], ["--version"], ["export", "--help"], ["export", "--version"]):
         with pytest.raises(SystemExit) as exc:
             main(argv)
         assert exc.value.code == 0
         out, err = capsys.readouterr()
         assert "Rafael Kallis" not in err
+
+
+def test_option_after_double_dash_is_positional_not_flag(capsys):
+    """`--` marks the end of options in argparse: tokens after it are
+    positionals, so `--quiet`/`--version` there must NOT suppress the notice
+    (and `--version` after `--` is not a version action)."""
+    # reconcile: `--quiet` after `--` becomes the spec path; notice printed.
+    rc = main(["--dry-run", "--", "--quiet"])  # missing creds -> exit 1
+    assert rc == 1
+    _, err = capsys.readouterr()
+    assert len(_NOTICE_RE.findall(err)) == 1
+
+
+def test_export_version_after_double_dash_is_positional(capsys):
+    """`export -- --version` treats `--version` as the OUT positional, not a
+    version action: the notice is printed and the missing-creds path runs."""
+    rc = main(["export", "--", "--version"])  # missing creds -> exit 1
+    assert rc == 1
+    _, err = capsys.readouterr()
+    assert len(_NOTICE_RE.findall(err)) == 1
+    assert "error:" in err

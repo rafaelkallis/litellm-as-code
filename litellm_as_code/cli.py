@@ -86,6 +86,7 @@ def build_export_parser() -> argparse.ArgumentParser:
             "so credential_values/key come out as placeholders to fill in."
         ),
     )
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     _add_quiet_flag(p)
     p.add_argument(
         "out",
@@ -120,12 +121,19 @@ def _notice_requested(argv: list[str]) -> bool:
     """Whether this invocation should print the author & license notice.
 
     Skipped when ``--quiet`` is given, or when the invocation asks for
-    ``-h``/``--help``/``--version`` — those are argparse actions that run
-    before ``main()`` can finish, and the docs promise they're unaffected by
-    the notice. In every other case the notice is emitted BEFORE full parsing
-    so even a malformed invocation (which argparse aborts with an error and a
+    ``-h``/``--help``/``--version`` (both parsers now define ``--version``) —
+    those are argparse actions that run before ``main()`` can finish, and the
+    docs promise they're unaffected by the notice.
+
+    Only the tokens BEFORE the first ``--`` are scanned: argparse treats
+    everything after ``--`` as positionals, so e.g. ``[- -, --quiet]`` has
+    ``--quiet`` as the spec path (not a flag) and must not suppress the
+    notice. In every other case the notice is emitted BEFORE full parsing so
+    even a malformed invocation (which argparse aborts with an error and a
     non-zero exit) still prints it first, per the "every invocation" contract.
     """
+    if "--" in argv:
+        argv = argv[: argv.index("--")]
     if "--quiet" in argv:
         return False
     return not any(a in ("-h", "--help", "--version") for a in argv)
