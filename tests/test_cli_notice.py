@@ -17,7 +17,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10
     import tomli as tomllib  # type: ignore[no-redef]
 
 from litellm_as_code import __version__
-from litellm_as_code.cli import main
+from litellm_as_code.cli import build_export_parser, build_parser, main
 from litellm_as_code.notice import notice, print_notice
 
 # Lenient about the dash: the notice renders a UTF-8 em-dash ("—"), but some
@@ -68,6 +68,14 @@ def test_print_notice_goes_to_stderr(capsys):
     out, err = capsys.readouterr()
     assert out == ""
     assert _NOTICE_RE.search(err)
+
+
+def test_both_parsers_surface_attribution_in_help():
+    """`--help` on both command paths exposes author/license in the description
+    (reconcile parser and export parser), matching the documented CLI surface."""
+    for p in (build_parser(), build_export_parser()):
+        assert "Rafael Kallis" in p.description
+        assert "MIT" in p.description
 
 
 def test_reconcile_path_prints_notice_once_on_stderr(capsys):

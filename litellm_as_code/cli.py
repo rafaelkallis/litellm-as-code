@@ -79,10 +79,10 @@ def build_export_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="litellm-as-code export",
         description=(
-            "Read the live LiteLLM proxy's runtime (DB-backed) state and write "
-            "a declarative spec that reproduces it. Secrets are never read "
-            "back (write-once), so credential_values/key come out as "
-            "placeholders to fill in."
+            "litellm-as-code (Rafael Kallis, MIT license): read the live "
+            "LiteLLM proxy's runtime (DB-backed) state and write a declarative "
+            "spec that reproduces it. Secrets are never read back (write-once), "
+            "so credential_values/key come out as placeholders to fill in."
         ),
     )
     _add_quiet_flag(p)
