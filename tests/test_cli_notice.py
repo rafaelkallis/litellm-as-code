@@ -9,8 +9,12 @@ truth).
 from __future__ import annotations
 
 import re
-import tomllib
 from pathlib import Path
+
+try:
+    import tomllib  # Python >= 3.11
+except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10
+    import tomli as tomllib  # type: ignore[no-redef]
 
 from litellm_as_code import __version__
 from litellm_as_code.cli import main
