@@ -132,7 +132,7 @@ def _notice_requested(argv: list[str]) -> bool:
     docs promise they're unaffected by the notice.
 
     Only the tokens BEFORE the first ``--`` are scanned: argparse treats
-    everything after ``--`` as positionals, so e.g. ``[- -, --quiet]`` has
+    everything after ``--`` as positionals, so e.g. ``["--", "--quiet"]`` has
     ``--quiet`` as the spec path (not a flag) and must not suppress the
     notice. In every other case the notice is emitted BEFORE full parsing so
     even a malformed invocation (which argparse aborts with an error and a

@@ -121,8 +121,9 @@ litellm-as-code export [OUT] [--base-url URL] [--api-key KEY] [--quiet]   # read
 
 Every invocation prints a short **author & license notice** to stderr first
 (`litellm-as-code <version> — by Rafael Kallis, licensed under MIT`). It is
-stderr-only, so it never pollutes stdout (e.g. for `export`); `--quiet`
-suppresses it for scripts.
+stderr-only, so it never pollutes stdout (e.g. for `export`). The notice is
+suppressed only for `--quiet` (scripting) and for the stdlib argparse actions
+`--help`/`--version` (which print & exit before the notice would be emitted).
 
 Env aliases: `LITELLM_SPEC` · `LITELLM_BASE_URL`/`BASE_URL` ·
 `LITELLM_API_KEY`/`API_KEY`. `--prune` is reserved and effectively a no-op
