@@ -55,12 +55,14 @@ def test_metadata_matches_pyproject():
     """_meta, pyproject.toml, and __init__ agree on one author/license."""
     project = _read_pyproject()["project"]
     (author,) = project["authors"]
-    assert author["name"] == "Rafael Kallis"
-    assert project["license"]["text"] == "MIT"
+    # Compare TOML values directly against the shared constants (not literals),
+    # so a change to AUTHOR/LICENSE in _meta.py or pyproject.toml is caught.
+    assert author["name"] == AUTHOR
+    assert project["license"]["text"] == LICENSE
     assert project["version"] == __version__
     # the rendered string reflects the same facts
     text = notice()
-    assert "Rafael Kallis" in text and "MIT" in text
+    assert AUTHOR in text and LICENSE in text
 
 
 def test_print_notice_goes_to_stderr(capsys):
