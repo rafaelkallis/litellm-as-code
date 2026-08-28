@@ -132,3 +132,37 @@ def test_quiet_export_suppresses_notice(capsys):
     assert rc == 1
     _, err = capsys.readouterr()
     assert "Rafael Kallis" not in err
+
+
+def test_malformed_reconcile_still_prints_notice(capsys):
+    """The notice is emitted BEFORE argparse parsing, so even a malformed
+    invocation (which argparse aborts with exit 2 before main() returns)
+    still prints it on stderr first — per the 'every invocation' contract."""
+    with pytest.raises(SystemExit) as exc:
+        main(["--unknown-flag"])
+    assert exc.value.code == 2  # argparse usage error
+    _, err = capsys.readouterr()
+    assert len(_NOTICE_RE.findall(err)) == 1
+    assert "usage:" in err
+
+
+def test_malformed_export_still_prints_notice(capsys):
+    """Same guarantee on the export path: unknown options exit via argparse,
+    but the notice is printed first."""
+    with pytest.raises(SystemExit) as exc:
+        main(["export", "--unknown-flag"])
+    assert exc.value.code == 2
+    _, err = capsys.readouterr()
+    assert len(_NOTICE_RE.findall(err)) == 1
+    assert "usage:" in err
+
+
+def test_help_and_version_do_not_print_notice(capsys):
+    """`--help` / `--version` are argparse actions that print & exit before
+    main() can finish; docs promise they're unaffected by the notice."""
+    for argv in (["--help"], ["--version"], ["export", "--help"]):
+        with pytest.raises(SystemExit) as exc:
+            main(argv)
+        assert exc.value.code == 0
+        out, err = capsys.readouterr()
+        assert "Rafael Kallis" not in err

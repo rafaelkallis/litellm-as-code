@@ -116,6 +116,21 @@ def _require_credentials(base_url: str | None, api_key: str | None) -> bool:
     return True
 
 
+def _notice_requested(argv: list[str]) -> bool:
+    """Whether this invocation should print the author & license notice.
+
+    Skipped when ``--quiet`` is given, or when the invocation asks for
+    ``-h``/``--help``/``--version`` — those are argparse actions that run
+    before ``main()`` can finish, and the docs promise they're unaffected by
+    the notice. In every other case the notice is emitted BEFORE full parsing
+    so even a malformed invocation (which argparse aborts with an error and a
+    non-zero exit) still prints it first, per the "every invocation" contract.
+    """
+    if "--quiet" in argv:
+        return False
+    return not any(a in ("-h", "--help", "--version") for a in argv)
+
+
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
@@ -124,10 +139,11 @@ def main(argv: list[str] | None = None) -> int:
     # `litellm-as-code export [OUT]` — a read-only subcommand distinct from
     # the default reconcile flow (which treats the first positional as a spec).
     if args and args[0] == "export":
-        ep = build_export_parser()
-        eargs = ep.parse_args(args[1:])
-        if not eargs.quiet:
+        sub = args[1:]
+        if _notice_requested(sub):
             print_notice()
+        ep = build_export_parser()
+        eargs = ep.parse_args(sub)
         if not _require_credentials(eargs.base_url, eargs.api_key):
             return 1
         try:
@@ -139,10 +155,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {e}", file=sys.stderr)
             return 1
 
-    args = build_parser().parse_args(args)
-
-    if not args.quiet:
+    if _notice_requested(args):
         print_notice()
+    args = build_parser().parse_args(args)
 
     if not _require_credentials(args.base_url, args.api_key):
         return 1
