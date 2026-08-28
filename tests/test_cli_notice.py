@@ -11,6 +11,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 try:
     import tomllib  # Python >= 3.11
 except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10
@@ -27,6 +29,16 @@ _NOTICE_RE = re.compile(
     r"^litellm-as-code [\w.]+ (?:—|--) by Rafael Kallis, licensed under MIT$",
     re.MULTILINE,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_credential_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clear every credential/config env alias the CLI reads, so the
+    "missing credentials" tests deterministically take the error path instead
+    of reaching a live proxy (or clobbering out.yml) on hosts where these are
+    set (LITELLM_BASE_URL/BASE_URL, LITELLM_API_KEY/API_KEY, LITELLM_SPEC)."""
+    for var in ("LITELLM_BASE_URL", "BASE_URL", "LITELLM_API_KEY", "API_KEY", "LITELLM_SPEC"):
+        monkeypatch.delenv(var, raising=False)
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
