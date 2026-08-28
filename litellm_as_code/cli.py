@@ -39,9 +39,14 @@ def _add_quiet_flag(p: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    # allow_abbrev=False: argparse would otherwise accept unambiguous prefixes
+    # (--q for --quiet, --ver for --version, ...) which the notice pre-scan
+    # can't mirror reliably. Exact option names only keeps the CLI surface and
+    # the "every invocation" notice behavior deterministic.
     p = argparse.ArgumentParser(
         prog="litellm-as-code",
         description=_DESCRIPTION,
+        allow_abbrev=False,
     )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     _add_quiet_flag(p)
@@ -85,6 +90,7 @@ def build_export_parser() -> argparse.ArgumentParser:
             "spec that reproduces it. Secrets are never read back (write-once), "
             "so credential_values/key come out as placeholders to fill in."
         ),
+        allow_abbrev=False,
     )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     _add_quiet_flag(p)

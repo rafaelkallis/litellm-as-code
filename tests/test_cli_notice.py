@@ -188,3 +188,30 @@ def test_export_version_after_double_dash_is_positional(capsys):
     _, err = capsys.readouterr()
     assert len(_NOTICE_RE.findall(err)) == 1
     assert "error:" in err
+
+
+def test_abbreviated_options_are_rejected(capsys):
+    """allow_abbrev=False: unambiguous prefixes like `--q`/`--ver`/`--hel` are
+    NOT accepted (argparse would otherwise expand them only after the notice
+    pre-scan has already run). They exit 2 as unknown options and the notice
+    is still printed first."""
+    for argv in (["--q"], ["--ver"], ["--hel"], ["export", "--q"]):
+        with pytest.raises(SystemExit) as exc:
+            main(argv)
+        assert exc.value.code == 2
+        _, err = capsys.readouterr()
+        assert len(_NOTICE_RE.findall(err)) == 1
+        assert "usage:" in err
+
+
+def test_exact_options_still_suppress_notice(capsys):
+    """The exact options are unaffected by allow_abbrev=False: --quiet on both
+    paths suppresses the notice (missing-creds error still shown, exit 1)."""
+    rc = main(["--dry-run", "--quiet"])
+    assert rc == 1
+    _, err = capsys.readouterr()
+    assert "Rafael Kallis" not in err
+    rc = main(["export", "out.yml", "--quiet"])
+    assert rc == 1
+    _, err = capsys.readouterr()
+    assert "Rafael Kallis" not in err
