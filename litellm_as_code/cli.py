@@ -7,6 +7,7 @@ import os
 import sys
 
 from . import __version__
+from ._meta import AUTHOR, LICENSE
 from .api import LiteLLMClient
 from .exporter import export_spec
 from .notice import print_notice
@@ -14,7 +15,7 @@ from .reconciler import run
 
 
 _DESCRIPTION = (
-    "litellm-as-code (Rafael Kallis, MIT license): declarative runtime-state "
+    f"litellm-as-code ({AUTHOR}, {LICENSE} license): declarative runtime-state "
     "management for a LiteLLM proxy — reconcile "
     "users/teams/keys/credentials/models from a YAML spec, or export a live "
     "proxy to a spec."
@@ -79,7 +80,7 @@ def build_export_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="litellm-as-code export",
         description=(
-            "litellm-as-code (Rafael Kallis, MIT license): read the live "
+            f"litellm-as-code ({AUTHOR}, {LICENSE} license): read the live "
             "LiteLLM proxy's runtime (DB-backed) state and write a declarative "
             "spec that reproduces it. Secrets are never read back (write-once), "
             "so credential_values/key come out as placeholders to fill in."

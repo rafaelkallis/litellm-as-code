@@ -17,6 +17,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10
     import tomli as tomllib  # type: ignore[no-redef]
 
 from litellm_as_code import __version__
+from litellm_as_code._meta import AUTHOR, LICENSE
 from litellm_as_code.cli import build_export_parser, build_parser, main
 from litellm_as_code.notice import notice, print_notice
 
@@ -72,10 +73,14 @@ def test_print_notice_goes_to_stderr(capsys):
 
 def test_both_parsers_surface_attribution_in_help():
     """`--help` on both command paths exposes author/license in the description
-    (reconcile parser and export parser), matching the documented CLI surface."""
+    (reconcile parser and export parser), matching the documented CLI surface.
+
+    The attribution must come from the shared `_meta` constants (not
+    hard-coded literals) so the help text can't drift from the notice / package
+    metadata when they change."""
     for p in (build_parser(), build_export_parser()):
-        assert "Rafael Kallis" in p.description
-        assert "MIT" in p.description
+        assert AUTHOR in p.description
+        assert LICENSE in p.description
 
 
 def test_reconcile_path_prints_notice_once_on_stderr(capsys):
