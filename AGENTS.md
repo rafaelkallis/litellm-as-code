@@ -104,14 +104,22 @@ per-token. Convert ÷1e6 when sending, and back when comparing.
 ## 6. CLI contract (stable)
 
 ```
-litellm-as-code <spec> [--base-url URL] [--api-key KEY] [--dry-run] [--prune]
+litellm-as-code <spec> [--base-url URL] [--api-key KEY] [--dry-run] [--prune] [--quiet]
+litellm-as-code export [OUT] [--base-url URL] [--api-key KEY] [--quiet]   # read-only
 ```
 
 Env aliases: `LITELLM_SPEC`, `LITELLM_BASE_URL`/`BASE_URL`, `LITELLM_API_KEY`/`API_KEY`.
 
+Every invocation prints a short **author & license notice** to stderr first
+(`litellm-as-code <version> — by Rafael Kallis, licensed under MIT`). It is
+stderr-only so stdout stays machine-consumable (e.g. for `export`); `--quiet`
+suppresses it for scripts. `--version` and `--help` are stdlib argparse actions
+and are unaffected by `--quiet`.
+
 Exit codes: `0` = clean/no diff (applied or no-op); `1` = error;
 `2` = plan/apply showed changes **in `--dry-run`** (CI-friendly, like
-`terraform plan`'s non-zero diff detection).
+`terraform plan`'s non-zero diff detection). `export` exits `0` on success and
+`1` on error (it never applies anything).
 
 `--prune` is reserved but effectively no-op today (additive reconcile only).
 

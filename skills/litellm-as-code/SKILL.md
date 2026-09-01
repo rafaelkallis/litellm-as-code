@@ -115,9 +115,15 @@ source proxy is a no-op. See [spec-format](./references/spec-format.md).
 ## CLI reference
 
 ```
-litellm-as-code <spec> [--base-url URL] [--api-key KEY] [--dry-run] [--prune]
-litellm-as-code export [OUT] [--base-url URL] [--api-key KEY]   # read-only
+litellm-as-code <spec> [--base-url URL] [--api-key KEY] [--dry-run] [--prune] [--quiet]
+litellm-as-code export [OUT] [--base-url URL] [--api-key KEY] [--quiet]   # read-only
 ```
+
+Every invocation prints a short **author & license notice** to stderr first
+(`litellm-as-code <version> — by Rafael Kallis, licensed under MIT`). It is
+stderr-only, so it never pollutes stdout (e.g. for `export`). The notice is
+suppressed only for `--quiet` (scripting) and for the stdlib argparse actions
+`--help`/`--version` (which print & exit before the notice would be emitted).
 
 Env aliases: `LITELLM_SPEC` · `LITELLM_BASE_URL`/`BASE_URL` ·
 `LITELLM_API_KEY`/`API_KEY`. `--prune` is reserved and effectively a no-op
