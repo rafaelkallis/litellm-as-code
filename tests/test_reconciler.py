@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 
 import pytest
+import requests
 
 from litellm_as_code.reconciler import reconcile
 from litellm_as_code.types import Action
@@ -386,6 +387,376 @@ def test_alias_only_team_second_run_is_noop(ctx, tmp_path):
     member_diffs = [d for d in plan.diffs if d.resource_type == "team_member"]
     assert all(d.action is Action.NOOP for d in team_diffs), team_diffs
     assert member_diffs == [], member_diffs
+
+
+def test_alias_only_team_stale_listing_still_reconciles_members(ctx, tmp_path):
+    """Issue #4: after POST /team/new, the refreshed team listing may
+    temporarily miss the new row (eventual consistency on the real proxy).
+    The reconciler must resolve the remote team_id from the create response
+    (flat `team_id` at the root, per terraform-provider-litellm) so members
+    are still created — never silently skipped."""
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(
+        json.dumps(
+            {
+                "teams": [
+                    {
+                        "team_alias": "alias-team",
+                        "members_with_roles": [{"user_id": "u1", "role": "admin"}],
+                    }
+                ]
+            }
+        )
+    )
+
+    # Simulate eventual consistency: the team listing is stale for the first
+    # two reads (the pre-loop listing and the post-create refresh), so the
+    # reconciler must resolve the remote team_id from the create response.
+    original_list = client.list_teams  # type: ignore[method-assign]
+    reads = {"n": 0}
+
+    def _list_teams_stale():  # type: ignore[no-untyped-def]
+        reads["n"] += 1
+        teams = original_list()
+        if reads["n"] <= 2:
+            return [t for t in teams if t.get("team_alias") != "alias-team"]
+        return teams
+
+    client.list_teams = _list_teams_stale  # type: ignore[method-assign]
+
+    plan = reconcile(str(spec), client, dry_run=False)
+    team_diffs = [d for d in plan.diffs if d.resource_type == "team"]
+    assert any(d.action is Action.CREATE for d in team_diffs)
+
+    # the member was reconciled under the id from the create response,
+    # not silently skipped
+    assert fake.team_members, "members must be created, not silently skipped"
+    ((team_id, user_id),) = fake.team_members.keys()
+    assert user_id == "u1"
+    assert team_id, "member must attach to the resolved remote team_id"
+
+    # second run converges to a clean no-op
+    plan2 = reconcile(str(spec), client, dry_run=False)
+    team_diffs2 = [d for d in plan2.diffs if d.resource_type == "team"]
+    member_diffs2 = [d for d in plan2.diffs if d.resource_type == "team_member"]
+    assert all(d.action is Action.NOOP for d in team_diffs2), team_diffs2
+    assert member_diffs2 == [], member_diffs2
+
+
+def test_alias_only_team_uncooperative_create_fails_loudly(ctx, tmp_path):
+    """Issue #4: if the create response carries no team_id AND the refreshed
+    listing cannot locate the team (worst case), member reconciliation must
+    fail loudly — never report SUCCESS while members were never added."""
+    from litellm_as_code.types import ReconcilerError
+
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(
+        json.dumps(
+            {
+                "teams": [
+                    {
+                        "team_alias": "alias-team",
+                        "members_with_roles": [{"user_id": "u1", "role": "admin"}],
+                    }
+                ]
+            }
+        )
+    )
+    # uncooperative proxy: the create response is empty and the team is
+    # invisible to the listing (stale read even after the retry path)
+    client.create_team = lambda payload: {}  # type: ignore[method-assign]
+    client.list_teams = lambda: []  # type: ignore[method-assign]
+
+    with pytest.raises(ReconcilerError, match="remote team_id"):
+        reconcile(str(spec), client, dry_run=False)
+    assert fake.team_members == {}, "no member may be attached to an unknown team"
+
+
+def test_team_members_unresolvable_id_is_a_hard_error(ctx):
+    """Issue #4 (adjacent guard): team member reconciliation with an
+    unresolvable team_id (e.g. security-stripped spec passthrough) must be a
+    hard error, never a silent skip that turns the run into a false SUCCESS."""
+    from litellm_as_code.resources.teams import reconcile_team_members
+    from litellm_as_code.types import ReconcilerError
+
+    client, _ = ctx
+    with pytest.raises(ReconcilerError, match="no resolvable team_id"):
+        reconcile_team_members(
+            client,
+            [{"team_alias": "no-id-team", "members_with_roles": [{"user_id": "u1", "role": "admin"}]}],
+            dry_run=False,
+        )
+
+
+def test_org_members_unresolvable_id_is_a_hard_error(ctx):
+    """Issue #4 parity: org member reconciliation with an unresolvable
+    organization_id must be a hard error, never a silent skip."""
+    from litellm_as_code.resources.organizations import reconcile_org_members
+    from litellm_as_code.types import ReconcilerError
+
+    client, _ = ctx
+    with pytest.raises(ReconcilerError, match="no resolvable organization_id"):
+        reconcile_org_members(
+            client,
+            [
+                {
+                    "organization_alias": "no-id-org",
+                    "members_with_roles": [{"user_id": "u1", "role": "org_admin"}],
+                }
+            ],
+            dry_run=False,
+        )
+
+
+def test_alias_only_org_stale_listing_still_reconciles_members(ctx, tmp_path):
+    """Issue #4 parity for organizations: with a wrapped
+    POST /organization/new response (real-proxy envelope shape) and a stale
+    org listing, the members must still be created via the create response's
+    organization_id — never silently skipped."""
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(
+        json.dumps(
+            {
+                "organizations": [
+                    {
+                        "organization_alias": "alias-org",
+                        "members_with_roles": [{"user_id": "u1", "role": "org_admin"}],
+                    }
+                ]
+            }
+        )
+    )
+    # Wrap the *API method* (not _create_organization) so the api-level
+    # envelope unwrapping in create_organization is itself under test.
+    # NOTE: fake.attach() replaced client.create_organization with the fake's
+    # implementation, so wrapping it here exercises the resource-level usage,
+    # while the raw envelope handling has its own dedicated unit test below.
+    original_create = client.create_organization  # type: ignore[method-assign]
+    original_list = client.list_organizations  # type: ignore[method-assign]
+    reads = {"n": 0}
+
+    def _create_org_wrapped(payload):  # type: ignore[no-untyped-def]
+        # return the same shape api.create_organization produces after
+        # envelope unwrapping (flat payload passes through on the fake)
+        return original_create(payload)
+
+    def _list_orgs_stale():  # type: ignore[no-untyped-def]
+        reads["n"] += 1
+        orgs = original_list()
+        if reads["n"] <= 2:
+            return [o for o in orgs if o.get("organization_alias") != "alias-org"]
+        return orgs
+
+    client.create_organization = _create_org_wrapped  # type: ignore[method-assign]
+    client.list_organizations = _list_orgs_stale  # type: ignore[method-assign]
+
+    plan = reconcile(str(spec), client, dry_run=False)
+    org_diffs = [d for d in plan.diffs if d.resource_type == "organization"]
+    assert any(d.action is Action.CREATE for d in org_diffs)
+
+    assert fake.org_members, "members must be created, not silently skipped"
+    ((org_id, user_id),) = fake.org_members.keys()
+    assert user_id == "u1"
+    assert org_id, "member must attach to the resolved remote organization_id"
+
+    # second run converges to a clean no-op
+    plan2 = reconcile(str(spec), client, dry_run=False)
+    org_diffs2 = [d for d in plan2.diffs if d.resource_type == "organization"]
+    org_member_diffs2 = [
+        d for d in plan2.diffs if d.resource_type == "organization_member"
+    ]
+    assert all(d.action is Action.NOOP for d in org_diffs2), org_diffs2
+    assert org_member_diffs2 == [], org_member_diffs2
+
+
+def test_alias_only_org_uncooperative_create_fails_loudly(ctx, tmp_path):
+    """Issue #4 parity: an org created with an unconfirmable identity must
+    abort member reconciliation loudly rather than skip it silently."""
+    from litellm_as_code.types import ReconcilerError
+
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(
+        json.dumps(
+            {
+                "organizations": [
+                    {
+                        "organization_alias": "alias-org",
+                        "members_with_roles": [{"user_id": "u1", "role": "org_admin"}],
+                    }
+                ]
+            }
+        )
+    )
+    client.create_organization = lambda payload: {}  # type: ignore[method-assign]
+    client.list_organizations = lambda: []  # type: ignore[method-assign]
+
+    with pytest.raises(ReconcilerError, match="remote"):
+        reconcile(str(spec), client, dry_run=False)
+    assert fake.org_members == {}
+
+
+class _FakeResponse:
+    """Minimal stub for the 404-retry path in LiteLLMClient._request."""
+
+    def __init__(self, status_code, payload, url="http://fake:4000/x"):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = "" if status_code == 200 else json.dumps(payload)
+        self.url = url
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(
+                f"{self.status_code} Error for url: {self.url}", response=self
+            )
+
+    def json(self):
+        return self._payload
+
+
+class _ScriptedSession:
+    """Session stub returning scripted statuses (payload for the last one)."""
+
+    def __init__(self, states):
+        # states: list of (status_code, payload_or_None)
+        self._states = list(states)
+        self.calls = 0
+
+    def request(self, method, url, json=None, params=None, timeout=None):
+        self.calls += 1
+        status, payload = self._states.pop(0)
+        return _FakeResponse(status, payload or {}, url=url)
+
+
+def test_get_team_info_404_retry_returns_eventual_response():
+    """The read-after-create retry path: a 404 on GET /team/info must be
+    retried with backoff and the eventual 200 returned. Without `retry`, the
+    same 404 must fail immediately (one call, no backoff) — scoping per the
+    copilot review on this PR."""
+    from litellm_as_code.api import LiteLLMClient, ReconcilerError
+
+    client = LiteLLMClient("http://fake:4000", "test-admin-key", retry_base_delay=0.0)
+    team_payload = {"team_info": {"team_id": "t1", "team_alias": "a"}}
+
+    # retry=True: 404 then 200 → succeeds after 2 calls
+    session = _ScriptedSession([(404, {"detail": {"error": "team not found"}}), (200, team_payload)])
+    client.session = session  # type: ignore[method-assign]
+    assert client.get_team_info("t1", retry=True) == team_payload["team_info"]
+    assert session.calls == 2
+
+    # exhausted retries (all 404) → ReconcilerError after max_retries+1 calls
+    client2 = LiteLLMClient("http://fake:4000", "test-admin-key", retry_base_delay=0.0)
+    session2 = _ScriptedSession([(404, {}) for _ in range(client2.max_retries + 1)])
+    client2.session = session2  # type: ignore[method-assign]
+    with pytest.raises(ReconcilerError, match="team/info failed"):
+        client2.get_team_info("t1", retry=True)
+    assert session2.calls == client2.max_retries + 1
+
+    # retry=False (unchanged teams): 404 fails on the first call, no backoff
+    client3 = LiteLLMClient("http://fake:4000", "test-admin-key", retry_base_delay=0.0)
+    session3 = _ScriptedSession([(404, {}), (200, team_payload)])
+    client3.session = session3  # type: ignore[method-assign]
+    with pytest.raises(ReconcilerError, match="team/info failed"):
+        client3.get_team_info("t1")
+    assert session3.calls == 1, "no retry may be attempted without retry=True"
+
+
+def test_create_organization_unwraps_envelope_and_passes_flat_through():
+    """POST /organization/new wraps the created org in an envelope on the real
+    proxy ({organization_info: {...}} or {data: {...}}); api.create_organization
+    must unwrap it so resources see organization_id at the top level. A flat
+    payload (older proxies / the fake) must pass through untouched."""
+    from litellm_as_code.api import LiteLLMClient
+
+    client = LiteLLMClient("http://fake:4000", "test-admin-key")
+    calls: list[dict] = []
+
+    def _fake_request(method, path, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append({"method": method, "path": path, **kwargs})
+        return client._next_org_payload
+
+    client._request = _fake_request  # type: ignore[method-assign]
+
+    # flat payload (older proxy) → passthrough untouched
+    client._next_org_payload = {"organization_id": "org-flat"}
+    assert client.create_organization({}) == {"organization_id": "org-flat"}
+
+    # {organization_info: {...}} envelope (current proxy) → inner object
+    client._next_org_payload = {
+        "organization_info": {"organization_id": "org-inner", "members": []}
+    }
+    assert client.create_organization({}) == {
+        "organization_id": "org-inner",
+        "members": [],
+    }
+
+    # {data: {...}} envelope (variant shape) → inner object
+    client._next_org_payload = {"data": {"organization_id": "org-data"}}
+    assert client.create_organization({}) == {"organization_id": "org-data"}
+
+    # malformed envelopes (key present but no identity inside) → passthrough
+    # rather than a fabricated identity
+    client._next_org_payload = {"organization_info": {"foo": "bar"}}
+    assert client.create_organization({}) == {"organization_info": {"foo": "bar"}}
+
+    # every call went through POST /organization/new
+    assert all(c["method"] == "POST" and c["path"] == "/organization/new" for c in calls)
+
+
+def test_team_members_retry_scoped_to_just_created(ctx, tmp_path):
+    """The eventual-consistency retry on GET /team/info must scope to teams
+    created in the SAME run (_just_created marker); unchanged/dry-run teams
+    must not pay the exponential-backoff cost of a persistent 404."""
+    from litellm_as_code.resources import teams as teams_mod
+
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(
+        json.dumps(
+            {
+                "teams": [
+                    {
+                        "team_id": "team-prod",
+                        "team_alias": "prod",
+                        "members_with_roles": [{"user_id": "u1", "role": "admin"}],
+                    }
+                ]
+            }
+        )
+    )
+    reconcile(str(spec), client, dry_run=False)  # converge
+
+    # pre-existing team (NOT just created): retry must NOT be enabled
+    seen_kwargs: list[bool] = []
+    original = teams_mod._team_info
+
+    def _spy_team_info(c, team_id, retry=False):  # type: ignore[no-untyped-def]
+        seen_kwargs.append(bool(retry))
+        return original(c, team_id, retry=retry)
+
+    teams_mod._team_info = _spy_team_info  # type: ignore[method-assign]
+    try:
+        plan = reconcile(str(spec), client, dry_run=False)
+    finally:
+        teams_mod._team_info = original  # type: ignore[method-assign]
+    team_diffs = [d for d in plan.diffs if d.resource_type == "team"]
+    assert all(d.action is Action.NOOP for d in team_diffs)
+    assert seen_kwargs == [False], "pre-existing team must not use retry"
+
+    # just-created team: marker set and retry enabled
+    seen_kwargs.clear()
+    fake.teams.clear()
+    fake.team_members.clear()
+    teams_mod._team_info = _spy_team_info  # type: ignore[method-assign]
+    try:
+        reconcile(str(spec), client, dry_run=False)
+    finally:
+        teams_mod._team_info = original  # type: ignore[method-assign]
+    assert seen_kwargs == [True], "just-created team must use retry"
 
 
 def test_team_member_role_change_uses_member_update(ctx, tmp_path):
