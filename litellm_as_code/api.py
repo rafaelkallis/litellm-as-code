@@ -111,9 +111,15 @@ class LiteLLMClient:
     def list_teams(self) -> list[dict[str, Any]]:
         return self._request("GET", "/v2/team/list").get("teams", [])
 
-    def get_team_info(self, team_id: str) -> dict[str, Any]:
-        """Full team row incl. `members_with_roles` (GET /team/info -> {team_info})."""
-        payload = self._request("GET", "/team/info", params={"team_id": team_id})
+    def get_team_info(self, team_id: str, retry: bool = False) -> dict[str, Any]:
+        """Full team row incl. `members_with_roles` (GET /team/info -> {team_info}).
+
+        `retry` opts into the read-after-create backoff path in `_request`:
+        a team created moments ago can 404 briefly (eventual consistency).
+        """
+        payload = self._request(
+            "GET", "/team/info", params={"team_id": team_id}, retry=retry
+        )
         return self.unwrap(payload, "team_info")
 
     def create_team(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -235,7 +241,19 @@ class LiteLLMClient:
         return payload.get("organizations", [])
 
     def create_organization(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._request("POST", "/organization/new", json=payload)
+        # POST /organization/new wraps the created org in an envelope on the
+        # real proxy ({organization_info: {...}}; some versions use a
+        # {data: {...}} shape — see terraform-provider-litellm's
+        # unwrapObjectEnvelope envelope fallback). Unwrap level-by-level so
+        # callers see the org object with `organization_id` at the top level.
+        # A flat payload (older proxies) passes through untouched.
+        created = self._request("POST", "/organization/new", json=payload)
+        inner = self.unwrap(created, "organization_info")
+        if "organization_id" not in inner:
+            inner = self.unwrap(created, "data")
+        if "organization_id" not in inner:
+            return created
+        return inner
 
     def update_organization(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("PATCH", "/organization/update", json=payload)

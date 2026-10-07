@@ -23,7 +23,7 @@ from typing import Any
 
 from ..api import LiteLLMClient
 from ..diff import comparable_diff
-from ..types import Action, Diff
+from ..types import Action, Diff, ReconcilerError
 
 COMPARABLE = ["organization_alias", "models"]
 
@@ -59,6 +59,16 @@ def reconcile_organizations(
                 created_id = created.get("organization_id")
                 live = client.list_organizations()  # refresh
                 remote_org_id = _remote_org_id_from_live(live, entry, created_id)
+                if not remote_org_id:
+                    # The organization was created but its remote id cannot be
+                    # confirmed; member reconcile must not silently drop the
+                    # org's members (parity with the teams fix, issue #4).
+                    raise ReconcilerError(
+                        f"organization {display!r} was created but its remote "
+                        "organization_id could not be resolved from the create "
+                        "response or the organization listing; member "
+                        "reconciliation aborted"
+                    )
                 reconciled.append(dict(entry, _remote_org_id=remote_org_id))
             else:
                 diffs.append(
@@ -108,7 +118,13 @@ def reconcile_org_members(
         org_id = org.get("_remote_org_id") or org.get("organization_id")
         display = org.get("organization_alias") or org_id or "(unnamed)"
         if not org_id:
-            continue
+            # A spec-declared org with members whose identity cannot be
+            # resolved is a hard error: silently skipping members would make a
+            # successful run lie about convergence (parity with issue #4).
+            raise ReconcilerError(
+                f"organization {display!r} has no resolvable organization_id; "
+                "members cannot be reconciled"
+            )
 
         live_org = live_by_id.get(org_id, {})
         live_members = live_org.get("members", []) or []

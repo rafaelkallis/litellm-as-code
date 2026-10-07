@@ -16,7 +16,7 @@ from typing import Any
 
 from ..api import LiteLLMClient
 from ..diff import comparable_diff
-from ..types import Action, Diff
+from ..types import Action, Diff, ReconcilerError
 
 COMPARABLE = ["team_alias", "organization_id", "max_budget", "budget_duration", "models"]
 
@@ -60,11 +60,26 @@ def reconcile_teams(
                 payload = dict(entry)
                 if team_id:
                     payload["team_id"] = team_id
-                client.create_team(payload)
+                # POST /team/new returns the minted team_id flat at the root
+                # (verified against terraform-provider-litellm); it is a
+                # dependable identity source even when the refreshed listing
+                # briefly misses the new row (eventual consistency).
+                created = client.create_team(payload)
                 live = client.list_teams()  # refresh so member reconcile finds it
                 # Carry the remote team_id forward so member reconcile can attach
                 # to it without a second lookup.
-                remote_team_id = _remote_team_id_from_live(live, entry)
+                remote_team_id = _remote_team_id_from_live(
+                    live, entry, created.get("team_id")
+                )
+                if not remote_team_id:
+                    # Never interpolate: the team was created but its remote id
+                    # cannot be confirmed; member reconcile must not silently
+                    # drop the team's members (issue #4).
+                    raise ReconcilerError(
+                        f"team {display!r} was created but its remote team_id "
+                        "could not be resolved from the create response or the "
+                        "team listing; member reconciliation aborted"
+                    )
                 reconciled.append(dict(entry, _remote_team_id=remote_team_id))
             else:
                 # pretend-created: members can't be resolved in dry-run, skip members
@@ -90,13 +105,18 @@ def reconcile_teams(
     return diffs, reconciled
 
 
-def _remote_team_id_from_live(live: list[dict[str, Any]], entry: dict[str, Any]) -> str:
+def _remote_team_id_from_live(
+    live: list[dict[str, Any]],
+    entry: dict[str, Any],
+    created_id: str | None = None,
+) -> str:
     """Find the remote team_id for a just-created team in the refreshed listing.
 
-    Uses the same identity rule as `_find_remote`: prefer a fixed `team_id`,
-    fall back to `team_alias`. Returns "" if it can't be located.
+    Uses the same identity rule as `_find_remote`: prefer a fixed `team_id`
+    (or, on a fresh create, the id minted by POST /team/new), then fall back
+    to `team_alias`. Returns "" if it can't be located.
     """
-    team_id = entry.get("team_id")
+    team_id = entry.get("team_id") or created_id
     alias = entry.get("team_alias")
     for t in live:
         if team_id and t.get("team_id") == team_id:
@@ -105,7 +125,7 @@ def _remote_team_id_from_live(live: list[dict[str, Any]], entry: dict[str, Any])
         for t in live:
             if t.get("team_alias") == alias:
                 return t["team_id"]
-    return ""
+    return team_id or ""
 
 
 def reconcile_team_members(
@@ -124,10 +144,18 @@ def reconcile_team_members(
         team_id = team.get("_remote_team_id") or team.get("team_id")
         display = team.get("team_alias") or team_id or "(unnamed)"
         if not team_id:
-            continue
+            # A spec-declared team with members whose identity cannot be
+            # resolved is a hard error: silently skipping members would make a
+            # successful run lie about convergence (issue #4).
+            raise ReconcilerError(
+                f"team {display!r} has no resolvable team_id; members cannot "
+                "be reconciled"
+            )
 
-        # find current members via team info (list returns member objects)
-        team_info = _team_info(client, team_id)
+        # find current members via team info (list returns member objects).
+        # The read itself may 404 briefly on a team created moments ago
+        # (eventual consistency), so allow the client's retry path.
+        team_info = _team_info(client, team_id, retry=True)
         live_members = team_info.get("members_with_roles", [])
 
         want_by_id = {m["user_id"]: m.get("role") for m in want}
@@ -161,6 +189,6 @@ def reconcile_team_members(
     return diffs
 
 
-def _team_info(client: LiteLLMClient, team_id: str) -> dict[str, Any]:
+def _team_info(client: LiteLLMClient, team_id: str, retry: bool = False) -> dict[str, Any]:
     # GET /team/info?team_id=... returns {team_info: {...}} per provider research
-    return client.get_team_info(team_id)
+    return client.get_team_info(team_id, retry=retry)
