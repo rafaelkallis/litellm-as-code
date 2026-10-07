@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 
 import pytest
+import requests
 
 from litellm_as_code.reconciler import reconcile
 from litellm_as_code.types import Action
@@ -598,6 +599,72 @@ def test_alias_only_org_uncooperative_create_fails_loudly(ctx, tmp_path):
     assert fake.org_members == {}
 
 
+class _FakeResponse:
+    """Minimal stub for the 404-retry path in LiteLLMClient._request."""
+
+    def __init__(self, status_code, payload, url="http://fake:4000/x"):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = "" if status_code == 200 else json.dumps(payload)
+        self.url = url
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(
+                f"{self.status_code} Error for url: {self.url}", response=self
+            )
+
+    def json(self):
+        return self._payload
+
+
+class _ScriptedSession:
+    """Session stub returning scripted statuses (payload for the last one)."""
+
+    def __init__(self, states):
+        # states: list of (status_code, payload_or_None)
+        self._states = list(states)
+        self.calls = 0
+
+    def request(self, method, url, json=None, params=None, timeout=None):
+        self.calls += 1
+        status, payload = self._states.pop(0)
+        return _FakeResponse(status, payload or {}, url=url)
+
+
+def test_get_team_info_404_retry_returns_eventual_response():
+    """The read-after-create retry path: a 404 on GET /team/info must be
+    retried with backoff and the eventual 200 returned. Without `retry`, the
+    same 404 must fail immediately (one call, no backoff) — scoping per the
+    copilot review on this PR."""
+    from litellm_as_code.api import LiteLLMClient, ReconcilerError
+
+    client = LiteLLMClient("http://fake:4000", "test-admin-key", retry_base_delay=0.0)
+    team_payload = {"team_info": {"team_id": "t1", "team_alias": "a"}}
+
+    # retry=True: 404 then 200 → succeeds after 2 calls
+    session = _ScriptedSession([(404, {"detail": {"error": "team not found"}}), (200, team_payload)])
+    client.session = session  # type: ignore[method-assign]
+    assert client.get_team_info("t1", retry=True) == team_payload["team_info"]
+    assert session.calls == 2
+
+    # exhausted retries (all 404) → ReconcilerError after max_retries+1 calls
+    client2 = LiteLLMClient("http://fake:4000", "test-admin-key", retry_base_delay=0.0)
+    session2 = _ScriptedSession([(404, {}) for _ in range(client2.max_retries + 1)])
+    client2.session = session2  # type: ignore[method-assign]
+    with pytest.raises(ReconcilerError, match="team/info failed"):
+        client2.get_team_info("t1", retry=True)
+    assert session2.calls == client2.max_retries + 1
+
+    # retry=False (unchanged teams): 404 fails on the first call, no backoff
+    client3 = LiteLLMClient("http://fake:4000", "test-admin-key", retry_base_delay=0.0)
+    session3 = _ScriptedSession([(404, {}), (200, team_payload)])
+    client3.session = session3  # type: ignore[method-assign]
+    with pytest.raises(ReconcilerError, match="team/info failed"):
+        client3.get_team_info("t1")
+    assert session3.calls == 1, "no retry may be attempted without retry=True"
+
+
 def test_create_organization_unwraps_envelope_and_passes_flat_through():
     """POST /organization/new wraps the created org in an envelope on the real
     proxy ({organization_info: {...}} or {data: {...}}); api.create_organization
@@ -606,17 +673,90 @@ def test_create_organization_unwraps_envelope_and_passes_flat_through():
     from litellm_as_code.api import LiteLLMClient
 
     client = LiteLLMClient("http://fake:4000", "test-admin-key")
+    calls: list[dict] = []
 
-    flat = {"organization_id": "org-flat", "organization_alias": "flat"}
-    wrapped_info = {"organization_info": {"organization_id": "org-inner"}}
-    wrapped_data = {"data": {"organization_id": "org-data"}}
+    def _fake_request(method, path, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append({"method": method, "path": path, **kwargs})
+        return client._next_org_payload
 
-    assert (
-        client.unwrap(client.unwrap(wrapped_info, "organization_info"), "data")
-        == {"organization_id": "org-inner"}
+    client._request = _fake_request  # type: ignore[method-assign]
+
+    # flat payload (older proxy) → passthrough untouched
+    client._next_org_payload = {"organization_id": "org-flat"}
+    assert client.create_organization({}) == {"organization_id": "org-flat"}
+
+    # {organization_info: {...}} envelope (current proxy) → inner object
+    client._next_org_payload = {
+        "organization_info": {"organization_id": "org-inner", "members": []}
+    }
+    assert client.create_organization({}) == {
+        "organization_id": "org-inner",
+        "members": [],
+    }
+
+    # {data: {...}} envelope (variant shape) → inner object
+    client._next_org_payload = {"data": {"organization_id": "org-data"}}
+    assert client.create_organization({}) == {"organization_id": "org-data"}
+
+    # malformed envelopes (key present but no identity inside) → passthrough
+    # rather than a fabricated identity
+    client._next_org_payload = {"organization_info": {"foo": "bar"}}
+    assert client.create_organization({}) == {"organization_info": {"foo": "bar"}}
+
+    # every call went through POST /organization/new
+    assert all(c["method"] == "POST" and c["path"] == "/organization/new" for c in calls)
+
+
+def test_team_members_retry_scoped_to_just_created(ctx, tmp_path):
+    """The eventual-consistency retry on GET /team/info must scope to teams
+    created in the SAME run (_just_created marker); unchanged/dry-run teams
+    must not pay the exponential-backoff cost of a persistent 404."""
+    from litellm_as_code.resources import teams as teams_mod
+
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(
+        json.dumps(
+            {
+                "teams": [
+                    {
+                        "team_id": "team-prod",
+                        "team_alias": "prod",
+                        "members_with_roles": [{"user_id": "u1", "role": "admin"}],
+                    }
+                ]
+            }
+        )
     )
-    assert client.unwrap(wrapped_data, "data") == {"organization_id": "org-data"}
-    assert client.unwrap(flat, "organization_info") == flat
+    reconcile(str(spec), client, dry_run=False)  # converge
+
+    # pre-existing team (NOT just created): retry must NOT be enabled
+    seen_kwargs: list[bool] = []
+    original = teams_mod._team_info
+
+    def _spy_team_info(c, team_id, retry=False):  # type: ignore[no-untyped-def]
+        seen_kwargs.append(bool(retry))
+        return original(c, team_id, retry=retry)
+
+    teams_mod._team_info = _spy_team_info  # type: ignore[method-assign]
+    try:
+        plan = reconcile(str(spec), client, dry_run=False)
+    finally:
+        teams_mod._team_info = original  # type: ignore[method-assign]
+    team_diffs = [d for d in plan.diffs if d.resource_type == "team"]
+    assert all(d.action is Action.NOOP for d in team_diffs)
+    assert seen_kwargs == [False], "pre-existing team must not use retry"
+
+    # just-created team: marker set and retry enabled
+    seen_kwargs.clear()
+    fake.teams.clear()
+    fake.team_members.clear()
+    teams_mod._team_info = _spy_team_info  # type: ignore[method-assign]
+    try:
+        reconcile(str(spec), client, dry_run=False)
+    finally:
+        teams_mod._team_info = original  # type: ignore[method-assign]
+    assert seen_kwargs == [True], "just-created team must use retry"
 
 
 def test_team_member_role_change_uses_member_update(ctx, tmp_path):

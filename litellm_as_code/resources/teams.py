@@ -80,7 +80,9 @@ def reconcile_teams(
                         "could not be resolved from the create response or the "
                         "team listing; member reconciliation aborted"
                     )
-                reconciled.append(dict(entry, _remote_team_id=remote_team_id))
+                reconciled.append(
+                    dict(entry, _remote_team_id=remote_team_id, _just_created=True)
+                )
             else:
                 # pretend-created: members can't be resolved in dry-run, skip members
                 diffs.append(
@@ -153,9 +155,11 @@ def reconcile_team_members(
             )
 
         # find current members via team info (list returns member objects).
-        # The read itself may 404 briefly on a team created moments ago
-        # (eventual consistency), so allow the client's retry path.
-        team_info = _team_info(client, team_id, retry=True)
+        # Only a team created moments ago may 404 briefly read-after-write
+        # (eventual consistency): the client's retry path stays scoped to
+        # `_just_created` entries so unchanged/dry-run teams never pay the
+        # exponential-backoff cost on a persistent 404.
+        team_info = _team_info(client, team_id, retry=bool(team.get("_just_created")))
         live_members = team_info.get("members_with_roles", [])
 
         want_by_id = {m["user_id"]: m.get("role") for m in want}
