@@ -650,6 +650,68 @@ def test_alias_only_org_update_payload_pins_minted_id(ctx, tmp_path):
         assert payload.get("organization_id") == remote_id, payload
 
 
+def test_fixed_id_team_with_unmatched_id_is_not_retargeted_by_alias(ctx, tmp_path):
+    """Issue #9 review: alias fallback must apply ONLY to alias-only entries.
+    A spec entry with a fixed team_id whose alias happens to match a different
+    live team must not silently retarget (and with id-pinned updates, mutate)
+    that other team — the fixed-id entry is a CREATE, not an UPDATE."""
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(json.dumps({"teams": [{"team_alias": "prod"}]}))
+    reconcile(str(spec), client, dry_run=False)
+    minted = fake.teams["team-1"]
+
+    # retarget hazard: same alias, but a fixed team_id that matches nothing
+    # live — this must create a NEW team, never update the minted one
+    changed = json.loads(spec.read_text())
+    changed["teams"][0] = {"team_id": "team-fixed", "team_alias": "prod", "max_budget": 10.0}
+    spec.write_text(json.dumps(changed))
+
+    captured = _capture_team_payloads(client)
+    plan = reconcile(str(spec), client, dry_run=False)
+
+    team_creates = [d for d in plan.diffs if d.resource_type == "team" and d.action is Action.CREATE]
+    assert team_creates, "the unmatched fixed-id team must be created, not retargeted"
+    assert captured["update"] == [], f"no update may target the alias-matched team: {captured['update']}"
+
+    # the pre-existing alias-matched team is untouched
+    assert fake.teams["team-1"] == minted
+    # and a genuinely new row exists under the declared fixed id
+    assert fake.teams["team-fixed"]["team_id"] == "team-fixed"
+    assert fake.teams["team-fixed"]["max_budget"] == 10.0
+
+
+def test_fixed_id_org_with_unmatched_id_is_not_retargeted_by_alias(ctx, tmp_path):
+    """Issue #9 review: organization parity for the alias-fallback retarget
+    hazard — a fixed organization_id that matches nothing live must never be
+    swapped for the alias match's remote id (id-pinned updates make that a
+    silent mutation of the wrong org)."""
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(json.dumps({"organizations": [{"organization_alias": "acme"}]}))
+    reconcile(str(spec), client, dry_run=False)
+    minted = dict(fake.organizations["org-0"])
+
+    changed = json.loads(spec.read_text())
+    changed["organizations"][0] = {
+        "organization_id": "org-fixed",
+        "organization_alias": "acme",
+        "models": ["gpt-4o"],
+    }
+    spec.write_text(json.dumps(changed))
+
+    captured = _capture_org_update_payloads(client)
+    plan = reconcile(str(spec), client, dry_run=False)
+
+    org_creates = [d for d in plan.diffs if d.resource_type == "organization" and d.action is Action.CREATE]
+    assert org_creates, "the unmatched fixed-id org must be created, not retargeted"
+    assert captured == [], f"no update may target the alias-matched org: {captured}"
+
+    assert fake.organizations["org-0"] == minted
+    assert fake.organizations["org-fixed"]["organization_id"] == "org-fixed"
+    assert fake.organizations["org-fixed"]["models"] == ["gpt-4o"]
+
+
 def test_fake_rejects_team_update_without_known_team_id():
     """The fake must honestly mirror the real proxy: POST /team/update is
     id-addressed and rejects payloads without a known team_id (no by-alias

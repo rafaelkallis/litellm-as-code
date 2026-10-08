@@ -172,9 +172,16 @@ def reconcile_org_members(
 def _find_remote(
     orgs: list[dict[str, Any]], org_id: str | None, org_alias: str | None
 ) -> dict[str, Any] | None:
-    for o in orgs:
-        if org_id and o.get("organization_id") == org_id:
-            return o
+    # Identity contract (issue #9 review, teams.py parity): a spec entry that
+    # declares a fixed organization_id matches ONLY on that id; the alias
+    # fallback exists solely for alias-only entries. Letting it fire for an
+    # unmatched fixed id would retarget (and, with id-pinned updates, silently
+    # mutate) a different alias-matched organization.
+    if org_id:
+        for o in orgs:
+            if o.get("organization_id") == org_id:
+                return o
+        return None
     if org_alias:
         for o in orgs:
             if o.get("organization_alias") == org_alias:
@@ -191,7 +198,10 @@ def _remote_org_id_from_live(
     for o in live:
         if org_id and o.get("organization_id") == org_id:
             return o["organization_id"]
-    if alias:
+    # Same identity rule as _find_remote (issue #9 review): for a fixed-id
+    # entry the id is authoritative even when the listing read is stale; only
+    # alias-only entries may fall back to organization_alias.
+    if alias and not entry.get("organization_id"):
         for o in live:
             if o.get("organization_alias") == alias:
                 return o["organization_id"]

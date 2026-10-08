@@ -24,9 +24,16 @@ COMPARABLE = ["team_alias", "organization_id", "max_budget", "budget_duration", 
 def _find_remote(
     teams: list[dict[str, Any]], team_id: str | None, team_alias: str | None
 ) -> dict[str, Any] | None:
-    for t in teams:
-        if team_id and t.get("team_id") == team_id:
-            return t
+    # Identity contract (issue #9 review): a spec entry that declares a fixed
+    # team_id matches ONLY on that id. The team_alias fallback exists solely
+    # for alias-only entries; letting it fire for an unmatched fixed id would
+    # retarget (and now, with id-pinned updates, silently mutate) a different
+    # alias-matched team.
+    if team_id:
+        for t in teams:
+            if t.get("team_id") == team_id:
+                return t
+        return None
     if team_alias:
         for t in teams:
             if t.get("team_alias") == team_alias:
@@ -131,7 +138,10 @@ def _remote_team_id_from_live(
     for t in live:
         if team_id and t.get("team_id") == team_id:
             return t["team_id"]
-    if alias:
+    # Same identity rule as _find_remote (issue #9 review): for a fixed-id
+    # entry the id is authoritative even when the listing read is stale; only
+    # alias-only entries may fall back to team_alias.
+    if alias and not entry.get("team_id"):
         for t in live:
             if t.get("team_alias") == alias:
                 return t["team_id"]
