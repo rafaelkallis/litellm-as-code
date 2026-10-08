@@ -1,6 +1,7 @@
 """Budget reconciler.
 
-Identity: `budget_id` (assertable on create; LiteLLM generates one if omitted).
+Identity: `budget_id` (required in the spec; LiteLLM-generated ids assigned at
+create are not reconcilable, so an entry must always carry a known id).
 
 Comparable fields: the manageable budget limits table (`max_budget`,
 `soft_budget`, `max_parallel_requests`, `tpm_limit`, `rpm_limit`,
@@ -44,7 +45,7 @@ def reconcile_budgets(
 
     for entry in spec_entries:
         budget_id = entry["budget_id"]
-        display = budget_id or entry.get("budget_duration", "(unnamed)")
+        display = budget_id
         existing = live.get(budget_id)
 
         if existing is None:

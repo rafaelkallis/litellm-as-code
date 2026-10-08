@@ -163,6 +163,21 @@ def test_organization_requires_id_or_alias(tmp_path):
         load_spec(_tmp_spec(tmp_path, data))
 
 
+def test_budget_requires_budget_id(tmp_path):
+    data = copy.deepcopy(VALID_SPEC)
+    data["budgets"] = [{"max_budget": 25.0}]
+    with pytest.raises(SpecError, match="budget_id"):
+        load_spec(_tmp_spec(tmp_path, data))
+
+
+def test_budget_with_null_budget_id_requires_budget_id(tmp_path):
+    """Set-but-null counts as missing (matches the policies entry above)."""
+    data = copy.deepcopy(VALID_SPEC)
+    data["budgets"] = [{"budget_id": None, "max_budget": 25.0}]
+    with pytest.raises(SpecError, match="budget_id"):
+        load_spec(_tmp_spec(tmp_path, data))
+
+
 # -- type & enum checks ------------------------------------------------------
 
 

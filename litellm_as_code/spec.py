@@ -20,7 +20,7 @@ def load_spec(path: str | Path) -> dict[str, Any]:
 
     Structure (all sections optional except the file being YAML):
         config:        ignored by the reconciler (startup-only settings)
-        budgets:       [{budget_id?, max_budget?, soft_budget?, ...}]
+        budgets:       [{budget_id, max_budget?, soft_budget?, ...}]
         credentials:   [{credential_name, credential_info?, credential_values?}]
         models:        [{model_name, model_info?, litellm_params?}]
         organizations: [{organization_alias, organization_id?, members_with_roles?,

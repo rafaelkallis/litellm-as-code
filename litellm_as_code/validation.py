@@ -88,6 +88,17 @@ class _Budget(BaseModel):
     model_max_budget: Any = None
     budget_duration: DurationStr | None = None
 
+    @model_validator(mode="after")
+    def _require_identity(self) -> _Budget:
+        # Unlike teams/orgs there is no alias fallback: budget_id is the sole
+        # identity (LiteLLM has no find-budget-by-alias surface, and ids it
+        # generates server-side are not reconcilable from the spec).
+        if not self.budget_id:
+            raise ValueError(
+                "'budget_id' is required (LiteLLM-generated ids are not reconcilable)"
+            )
+        return self
+
 
 class _Organization(BaseModel):
     model_config = ConfigDict(extra="allow")
