@@ -178,6 +178,198 @@ def test_budget_with_null_budget_id_requires_budget_id(tmp_path):
         load_spec(_tmp_spec(tmp_path, data))
 
 
+# -- cross-entry uniqueness ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "entry"),
+    [
+        ("budgets", "budget_id", {"budget_id": "dup", "max_budget": 1.0}),
+        ("users", "user_id", {"user_id": "dup"}),
+        ("credentials", "credential_name", {"credential_name": "dup"}),
+        ("models", "model_name", {"model_name": "dup"}),
+        ("guardrails", "guardrail_name", {"guardrail_name": "dup"}),
+        ("policies", "policy_name", {"policy_name": "dup"}),
+    ],
+)
+def test_duplicate_identity_across_entries(tmp_path, section, field, entry):
+    """Two entries with the same identity would reconcile last-wins on the
+    same live resource; caught at spec-load, naming both indices."""
+    data = copy.deepcopy(VALID_SPEC)
+    data[section] = [entry, entry]
+    with pytest.raises(
+        SpecError,
+        match=rf"duplicate {field} .*first declared at spec\.{section}\[0\]",
+    ):
+        load_spec(_tmp_spec(tmp_path, data))
+
+
+def test_duplicate_key_alias_names_both_indices(tmp_path):
+    data = copy.deepcopy(VALID_SPEC)
+    data["virtual_keys"] = [
+        {"key_alias": "admin-cli", "user_id": "username-admin"},
+        {"key_alias": "admin-cli", "user_id": "username-admin"},
+    ]
+    with pytest.raises(
+        SpecError,
+        match=r"duplicate key_alias .*first declared at spec\.virtual_keys\[0\]",
+    ):
+        load_spec(_tmp_spec(tmp_path, data))
+
+
+def test_two_alias_only_teams_with_same_alias(tmp_path):
+    """The wrong-live-team clobber case: entry A creates team X; entry B
+    (same alias) would _find_remote-match X and update it instead of
+    creating a second team."""
+    data = copy.deepcopy(VALID_SPEC)
+    data["teams"] = [
+        {"team_alias": "production", "max_budget": 1.0},
+        {"team_alias": "production", "max_budget": 2.0},
+    ]
+    with pytest.raises(SpecError, match="duplicate team_alias 'production'"):
+        load_spec(_tmp_spec(tmp_path, data))
+
+
+def test_id_carrying_team_and_alias_only_team_sharing_alias(tmp_path):
+    data = copy.deepcopy(VALID_SPEC)
+    data["teams"] = [
+        {"team_id": "team-prod", "team_alias": "production"},
+        {"team_alias": "production", "max_budget": 5.0},
+    ]
+    with pytest.raises(SpecError, match="duplicate team_alias 'production'"):
+        load_spec(_tmp_spec(tmp_path, data))
+
+
+def test_two_alias_only_orgs_with_same_alias(tmp_path):
+    data = copy.deepcopy(VALID_SPEC)
+    data["organizations"] = [
+        {"organization_alias": "acme", "models": ["m1"]},
+        {"organization_alias": "acme", "models": ["m2"]},
+    ]
+    with pytest.raises(SpecError, match="duplicate organization_alias 'acme'"):
+        load_spec(_tmp_spec(tmp_path, data))
+
+
+def test_id_carrying_org_and_alias_only_org_sharing_alias(tmp_path):
+    data = copy.deepcopy(VALID_SPEC)
+    data["organizations"] = [
+        {"organization_id": "org-acme", "organization_alias": "acme"},
+        {"organization_alias": "acme", "models": ["m2"]},
+    ]
+    with pytest.raises(SpecError, match="duplicate organization_alias 'acme'"):
+        load_spec(_tmp_spec(tmp_path, data))
+
+
+def test_orgs_with_same_id_but_different_alias(tmp_path):
+    data = copy.deepcopy(VALID_SPEC)
+    data["organizations"] = [
+        {"organization_id": "org-x", "organization_alias": "alpha"},
+        {"organization_id": "org-x", "organization_alias": "beta"},
+    ]
+    with pytest.raises(SpecError, match="duplicate organization_id 'org-x'"):
+        load_spec(_tmp_spec(tmp_path, data))
+
+
+def test_teams_with_same_id_but_different_alias(tmp_path):
+    data = copy.deepcopy(VALID_SPEC)
+    data["teams"] = [
+        {"team_id": "team-x", "team_alias": "alpha"},
+        {"team_id": "team-x", "team_alias": "beta"},
+    ]
+    with pytest.raises(SpecError, match="duplicate team_id 'team-x'"):
+        load_spec(_tmp_spec(tmp_path, data))
+
+
+def test_teams_with_distinct_ids_and_aliases_load(tmp_path):
+    data = copy.deepcopy(VALID_SPEC)
+    data["teams"] = [
+        {"team_alias": "alpha"},
+        {"team_id": "team-beta", "team_alias": "beta"},
+    ]
+    load_spec(_tmp_spec(tmp_path, data))  # must not raise
+
+
+def test_duplicate_identity_is_skipped_for_null_values(tmp_path):
+    """Null/absent identity never compares against anything (the per-entry
+    identity validators catch those cases separately)."""
+    data = copy.deepcopy(VALID_SPEC)
+    data["policies"] = [{"policy_name": None}, {"guardrails_add": []}]
+    with pytest.raises(SpecError, match="policy_name"):
+        load_spec(_tmp_spec(tmp_path, data))
+
+
+@pytest.mark.parametrize(
+    ("section", "field"),
+    [
+        ("users", "user_id"),
+        ("virtual_keys", "key_alias"),
+        ("credentials", "credential_name"),
+        ("models", "model_name"),
+        ("guardrails", "guardrail_name"),
+        ("policies", "policy_name"),
+        ("budgets", "budget_id"),
+        ("teams", "team_id"),
+        ("teams", "team_alias"),
+        ("organizations", "organization_id"),
+        ("organizations", "organization_alias"),
+    ],
+)
+def test_empty_string_identity_is_rejected(tmp_path, section, field):
+    """An empty-string identity is not a valid identity: it would reconcile
+    against a bogus empty live identifier and must not be able to slip past
+    (or through) the cross-entry uniqueness check."""
+    data = copy.deepcopy(VALID_SPEC)
+    entry = dict.fromkeys((field,))
+    entry[field] = ""
+    data[section] = [entry]
+    with pytest.raises(SpecError, match=field):
+        load_spec(_tmp_spec(tmp_path, data))
+
+
+def test_empty_string_member_user_id_is_rejected(tmp_path):
+    data = copy.deepcopy(VALID_SPEC)
+    data["teams"] = [
+        {
+            "team_id": "team-prod",
+            "members_with_roles": [{"user_id": "", "role": "admin"}],
+        }
+    ]
+    with pytest.raises(SpecError, match="user_id"):
+        load_spec(_tmp_spec(tmp_path, data))
+
+
+def test_duplicate_team_member_user_id_raises(tmp_path):
+    """The reconciler builds want_by_id = {user_id: role} — a repeated
+    user_id would silently keep the last role."""
+    data = copy.deepcopy(VALID_SPEC)
+    data["teams"] = [
+        {
+            "team_id": "team-prod",
+            "members_with_roles": [
+                {"user_id": "u1", "role": "admin"},
+                {"user_id": "u1", "role": "user"},
+            ],
+        }
+    ]
+    with pytest.raises(SpecError, match="duplicate user_id 'u1'"):
+        load_spec(_tmp_spec(tmp_path, data))
+
+
+def test_duplicate_org_member_user_id_raises(tmp_path):
+    data = copy.deepcopy(VALID_SPEC)
+    data["organizations"] = [
+        {
+            "organization_id": "org-acme",
+            "members_with_roles": [
+                {"user_id": "u1", "role": "org_admin"},
+                {"user_id": "u1", "role": "internal_user"},
+            ],
+        }
+    ]
+    with pytest.raises(SpecError, match="duplicate user_id 'u1'"):
+        load_spec(_tmp_spec(tmp_path, data))
+
+
 # -- type & enum checks ------------------------------------------------------
 
 

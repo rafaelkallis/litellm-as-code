@@ -14,6 +14,13 @@ Scope discipline (see AGENTS.md §4):
 - Identity fields match exactly what reconcilers index (`entry["user_id"]`
   etc.) so a missing identity is caught here instead of a bare `KeyError`
   mid-reconcile.
+- Cross-entry **identity uniqueness** is checked per section (spec issue #8):
+  two entries resolving to the same identity would reconcile last-wins on the
+  same live resource, and a shared alias between an id-carrying and an
+  alias-only team/organization can match & update the *wrong* live one via the
+  reconcilers' by-alias fallback. Duplicate `user_id`s inside one
+  `members_with_roles` are likewise rejected (the reconciler's `want_by_id`
+  would silently keep the last role).
 - Nested opaque payloads (`credential_values`, `litellm_params`,
   `model_info`, `config`) are deliberately *not* closed schemas: providers
   pass arbitrary params. Only their well-known typed subfields are checked.
@@ -44,6 +51,13 @@ DurationStr = Annotated[str, Field(pattern=r"^\d+(s|m|h|d|w|mo|hr|min)?$")]
 # A list of model names / routes / guardrails (strings).
 StrList = Annotated[list[str], Field(strict=False)]
 
+# Identity fields are non-empty: on an optional field an empty string counts
+# as missing (falsy to the validators and the reconcilers' identity lookups);
+# on a required field "" would reconcile against a bogus empty identity. The
+# cross-entry uniqueness check then only ever skips values that per-entry
+# validation already rejected.
+NonEmptyStr = Annotated[str, Field(min_length=1, strict=True)]
+
 
 # -- members ----------------------------------------------------------------
 
@@ -58,14 +72,14 @@ _USER_ROLE_LIST = ", ".join(sorted(_USER_ROLES))
 class OrgMember(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    user_id: str
+    user_id: NonEmptyStr
     role: OrgRole = "internal_user"
 
 
 class TeamMember(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    user_id: str
+    user_id: NonEmptyStr
     role: TeamRole = "user"
 
 
@@ -79,7 +93,7 @@ class TeamMember(BaseModel):
 class _Budget(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    budget_id: str | None = None
+    budget_id: NonEmptyStr | None = None
     max_budget: Float | None = None
     soft_budget: Float | None = None
     max_parallel_requests: int | None = None
@@ -103,8 +117,8 @@ class _Budget(BaseModel):
 class _Organization(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    organization_id: str | None = None
-    organization_alias: str | None = None
+    organization_id: NonEmptyStr | None = None
+    organization_alias: NonEmptyStr | None = None
     models: StrList | None = None
     members_with_roles: list[OrgMember] = []
 
@@ -116,11 +130,24 @@ class _Organization(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _unique_members(self) -> _Organization:
+        # The reconciler builds `want_by_id = {m["user_id"]: ...}`, which would
+        # silently keep the *last* role for a repeated user_id.
+        seen: set[str] = set()
+        for member in self.members_with_roles:
+            if member.user_id in seen:
+                raise ValueError(
+                    f"duplicate user_id {member.user_id!r} in members_with_roles"
+                )
+            seen.add(member.user_id)
+        return self
+
 
 class _User(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    user_id: str
+    user_id: NonEmptyStr
     user_alias: str | None = None
     user_email: str | None = None
     user_role: str | None = None
@@ -139,8 +166,8 @@ class _User(BaseModel):
 class _Team(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    team_id: str | None = None
-    team_alias: str | None = None
+    team_id: NonEmptyStr | None = None
+    team_alias: NonEmptyStr | None = None
     organization_id: str | None = None
     max_budget: Float | None = None
     budget_duration: DurationStr | None = None
@@ -153,11 +180,24 @@ class _Team(BaseModel):
             raise ValueError("must set at least one of 'team_id' or 'team_alias'")
         return self
 
+    @model_validator(mode="after")
+    def _unique_members(self) -> _Team:
+        # The reconciler builds `want_by_id = {m["user_id"]: ...}`, which would
+        # silently keep the *last* role for a repeated user_id.
+        seen: set[str] = set()
+        for member in self.members_with_roles:
+            if member.user_id in seen:
+                raise ValueError(
+                    f"duplicate user_id {member.user_id!r} in members_with_roles"
+                )
+            seen.add(member.user_id)
+        return self
+
 
 class _Key(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    key_alias: str
+    key_alias: NonEmptyStr
     key: str | None = Field(default=None, min_length=1)
     user_id: str | None = None
     team_id: str | None = None
@@ -170,7 +210,7 @@ class _Key(BaseModel):
 class _Credential(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    credential_name: str
+    credential_name: NonEmptyStr
     credential_info: dict[str, Any] = {}
     credential_values: dict[str, Any] = {}
     model_id: str | None = None
@@ -179,7 +219,7 @@ class _Credential(BaseModel):
 class _Model(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    model_name: str
+    model_name: NonEmptyStr
     model_info: dict[str, Any] = {}
     litellm_params: dict[str, Any] = {}
 
@@ -187,7 +227,7 @@ class _Model(BaseModel):
 class _Guardrail(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    guardrail_name: str
+    guardrail_name: NonEmptyStr
     litellm_params: dict[str, Any] = {}
     guardrail_info: dict[str, Any] = {}
 
@@ -195,7 +235,7 @@ class _Guardrail(BaseModel):
 class _Policy(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    policy_name: str
+    policy_name: NonEmptyStr
     inherit: str | None = None
     description: str | None = None
     guardrails_add: StrList | None = None
@@ -230,6 +270,63 @@ def _check_model_tier(entry: dict[str, Any]) -> str | None:
             f"(expected one of: {', '.join(_MODEL_TIERS)})"
         )
     return None
+
+
+# Identity field(s) per section over which entries must be unique. Teams/orgs
+# have *two* (id + alias): the reconcilers match on id first, then fall back to
+# by-alias lookup, so any two entries sharing either value are ambiguous and
+# can converge onto (and clobber) the wrong live team/organization.
+_UNIQUE_FIELDS: dict[str, tuple[str, ...]] = {
+    "budgets": ("budget_id",),
+    "organizations": ("organization_id", "organization_alias"),
+    "users": ("user_id",),
+    "teams": ("team_id", "team_alias"),
+    "virtual_keys": ("key_alias",),
+    "credentials": ("credential_name",),
+    "models": ("model_name",),
+    "guardrails": ("guardrail_name",),
+    "policies": ("policy_name",),
+}
+
+
+def _check_entry_uniqueness(
+    *,
+    section: str,
+    entries: list[dict[str, Any]],
+    errors: list[str],
+) -> None:
+    """Flag duplicate identity values across entries of the same section.
+
+    Checked per identity field (teams/orgs on id and alias separately), so:
+    - two alias-only teams with the same alias are caught (the reconciler's
+      by-alias fallback would match the first one and re-update it instead of
+      creating a second team),
+    - an id-carrying entry and an alias-only entry sharing an alias are caught
+      (same wrong-team match), as are two id-carrying entries with one id.
+
+    ``None``/absent identity counts as absent and is never compared. Empty
+    strings cannot reach this point on identity fields (``NonEmptyStr``
+    rejects them per-entry); the falsy skip below is defense-in-depth.
+    Non-dict entries are skipped here — already reported by the per-entry path.
+    """
+    fields = _UNIQUE_FIELDS.get(section)
+    if not fields:
+        return
+    for field in fields:
+        first_seen: dict[str, int] = {}
+        for i, raw in enumerate(entries):
+            if not isinstance(raw, dict):
+                continue
+            value = raw.get(field)
+            if not isinstance(value, str) or not value:
+                continue
+            if value in first_seen:
+                errors.append(
+                    f"spec.{section}[{i}]: duplicate {field} {value!r} "
+                    f"(first declared at spec.{section}[{first_seen[value]}])"
+                )
+            else:
+                first_seen[value] = i
 
 
 def _validate_section(
@@ -306,6 +403,12 @@ def validate_spec(
             model=model,
             errors=errors,
             warnings=warnings,
+        )
+        # Cross-entry check: two entries resolving to the same identity make
+        # the reconcile last-wins ambiguous (and, for alias collisions, can
+        # match & update the *wrong* live resource).
+        _check_entry_uniqueness(
+            section=section, entries=entries, errors=errors
         )
 
     return errors, warnings
