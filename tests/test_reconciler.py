@@ -474,6 +474,266 @@ def test_alias_only_team_uncooperative_create_fails_loudly(ctx, tmp_path):
     assert fake.team_members == {}, "no member may be attached to an unknown team"
 
 
+# ---------------------------------------------------------------------------
+# Issue #9: payload hygiene on team/org mutations
+# ---------------------------------------------------------------------------
+
+
+def _capture_team_payloads(client):
+    """Record every payload sent to POST /team/new and POST /team/update."""
+    captured: dict = {"create": [], "update": []}
+    orig_create = client.create_team
+    orig_update = client.update_team
+
+    def _create(p):  # type: ignore[no-untyped-def]
+        captured["create"].append(dict(p))
+        return orig_create(p)
+
+    def _update(p):  # type: ignore[no-untyped-def]
+        captured["update"].append(dict(p))
+        return orig_update(p)
+
+    client.create_team = _create  # type: ignore[method-assign]
+    client.update_team = _update  # type: ignore[method-assign]
+    return captured
+
+
+def _capture_org_update_payloads(client):
+    """Record every payload sent to PATCH /organization/update."""
+    captured: list = []
+    orig_update = client.update_organization
+
+    def _update(p):  # type: ignore[no-untyped-def]
+        captured.append(dict(p))
+        return orig_update(p)
+
+    client.update_organization = _update  # type: ignore[method-assign]
+    return captured
+
+
+def test_team_create_payload_is_member_free(ctx, tmp_path):
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(json.dumps(SPEC))
+
+    captured = _capture_team_payloads(client)
+    reconcile(str(spec), client, dry_run=False)
+
+    assert captured["create"], "team create must have happened"
+    for payload in captured["create"]:
+        assert "members_with_roles" not in payload, payload
+
+
+def test_team_update_payload_is_member_free_and_id_pinned(ctx, tmp_path):
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(json.dumps(SPEC))
+    reconcile(str(spec), client, dry_run=False)
+
+    # drift a comparable team field without touching members
+    changed = json.loads(spec.read_text())
+    changed["teams"][0]["max_budget"] = 50.0
+    spec.write_text(json.dumps(changed))
+
+    captured = _capture_team_payloads(client)
+    plan = reconcile(str(spec), client, dry_run=False)
+
+    team_updates = [
+        d for d in plan.diffs if d.resource_type == "team" and d.action is Action.UPDATE
+    ]
+    assert team_updates, "the drifted team must render an UPDATE diff"
+    assert captured["update"], "the drifted team must be updated"
+    for payload in captured["update"]:
+        assert "members_with_roles" not in payload, payload
+        # the resolved remote id must always ride along — the real proxy
+        # requires team_id on /team/update
+        assert payload["team_id"] == "team-prod", payload
+
+
+def test_alias_only_team_update_payload_carries_resolved_team_id(ctx, tmp_path):
+    """Alias-only teams: the update payload must carry the remote team_id
+    resolved from the live listing (not absent — the real proxy 422s)."""
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(
+        json.dumps(
+            {
+                "teams": [
+                    {
+                        "team_alias": "alias-team",
+                        "members_with_roles": [{"user_id": "u1", "role": "admin"}],
+                    }
+                ]
+            }
+        )
+    )
+    reconcile(str(spec), client, dry_run=False)
+    # the fake keys teams by remote team_id; resolve the id for the alias
+    remote_id = {t["team_alias"]: t["team_id"] for t in client.list_teams()}[
+        "alias-team"
+    ]
+
+    # drift a comparable field, members untouched
+    changed = json.loads(spec.read_text())
+    changed["teams"][0]["max_budget"] = 75.0
+    spec.write_text(json.dumps(changed))
+
+    captured = _capture_team_payloads(client)
+    plan = reconcile(str(spec), client, dry_run=False)
+
+    team_updates = [d for d in plan.diffs if d.resource_type == "team" and d.action is Action.UPDATE]
+    assert team_updates, "the drifted alias-only team must render an UPDATE diff"
+    assert captured["update"], "the drifted alias-only team must be updated"
+    for payload in captured["update"]:
+        assert "members_with_roles" not in payload, payload
+        assert payload.get("team_id") == remote_id, payload
+
+
+def test_org_update_payload_is_member_free_and_id_pinned(ctx, tmp_path):
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(json.dumps(FULL_SPEC))
+    reconcile(str(spec), client, dry_run=False)
+    captured = _capture_org_update_payloads(client)
+
+    # drift a comparable org field without touching members
+    changed = json.loads(spec.read_text())
+    changed["organizations"][0]["organization_alias"] = "acme-eu"
+    spec.write_text(json.dumps(changed))
+
+    plan = reconcile(str(spec), client, dry_run=False)
+
+    org_updates = [d for d in plan.diffs if d.resource_type == "organization" and d.action is Action.UPDATE]
+    assert org_updates, "the drifted org must render an UPDATE diff"
+    assert captured, "the drifted org must be updated"
+    for payload in captured:
+        assert "members_with_roles" not in payload, payload
+        assert payload["organization_id"] == "org-1", payload
+
+
+def test_alias_only_org_update_payload_pins_minted_id(ctx, tmp_path):
+    """Alias-only org: PATCH /organization/update must carry the minted remote
+    organization_id. This is the identity form for which pinning matters — the
+    id-carrying org test above would still pass even without choosing the
+    resolved id (the spec already carries it)."""
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(
+        json.dumps(
+            {
+                "organizations": [
+                    {"organization_alias": "alias-org", "models": ["gpt-4o"]}
+                ]
+            }
+        )
+    )
+    reconcile(str(spec), client, dry_run=False)
+    # the fake keys orgs by remote organization_id; resolve the id minted
+    # at create time
+    remote_id = {o["organization_alias"]: o["organization_id"] for o in client.list_organizations()}[
+        "alias-org"
+    ]
+
+    # drift a comparable org field (members untouched — there are none)
+    changed = json.loads(spec.read_text())
+    changed["organizations"][0]["models"] = ["gpt-4o-mini"]
+    spec.write_text(json.dumps(changed))
+
+    captured = _capture_org_update_payloads(client)
+    plan = reconcile(str(spec), client, dry_run=False)
+
+    org_updates = [d for d in plan.diffs if d.resource_type == "organization" and d.action is Action.UPDATE]
+    assert org_updates, "the drifted alias-only org must render an UPDATE diff"
+    assert captured, "the drifted alias-only org must be updated"
+    for payload in captured:
+        assert "members_with_roles" not in payload, payload
+        assert payload.get("organization_id") == remote_id, payload
+
+
+def test_fixed_id_team_with_unmatched_id_is_not_retargeted_by_alias(ctx, tmp_path):
+    """Issue #9 review: alias fallback must apply ONLY to alias-only entries.
+    A spec entry with a fixed team_id whose alias happens to match a different
+    live team must not silently retarget (and with id-pinned updates, mutate)
+    that other team — the fixed-id entry is a CREATE, not an UPDATE."""
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(json.dumps({"teams": [{"team_alias": "prod"}]}))
+    reconcile(str(spec), client, dry_run=False)
+    minted = fake.teams["team-1"]
+
+    # retarget hazard: same alias, but a fixed team_id that matches nothing
+    # live — this must create a NEW team, never update the minted one
+    changed = json.loads(spec.read_text())
+    changed["teams"][0] = {"team_id": "team-fixed", "team_alias": "prod", "max_budget": 10.0}
+    spec.write_text(json.dumps(changed))
+
+    captured = _capture_team_payloads(client)
+    plan = reconcile(str(spec), client, dry_run=False)
+
+    team_creates = [d for d in plan.diffs if d.resource_type == "team" and d.action is Action.CREATE]
+    assert team_creates, "the unmatched fixed-id team must be created, not retargeted"
+    assert captured["update"] == [], f"no update may target the alias-matched team: {captured['update']}"
+
+    # the pre-existing alias-matched team is untouched
+    assert fake.teams["team-1"] == minted
+    # and a genuinely new row exists under the declared fixed id
+    assert fake.teams["team-fixed"]["team_id"] == "team-fixed"
+    assert fake.teams["team-fixed"]["max_budget"] == 10.0
+
+
+def test_fixed_id_org_with_unmatched_id_is_not_retargeted_by_alias(ctx, tmp_path):
+    """Issue #9 review: organization parity for the alias-fallback retarget
+    hazard — a fixed organization_id that matches nothing live must never be
+    swapped for the alias match's remote id (id-pinned updates make that a
+    silent mutation of the wrong org)."""
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(json.dumps({"organizations": [{"organization_alias": "acme"}]}))
+    reconcile(str(spec), client, dry_run=False)
+    minted = dict(fake.organizations["org-0"])
+
+    changed = json.loads(spec.read_text())
+    changed["organizations"][0] = {
+        "organization_id": "org-fixed",
+        "organization_alias": "acme",
+        "models": ["gpt-4o"],
+    }
+    spec.write_text(json.dumps(changed))
+
+    captured = _capture_org_update_payloads(client)
+    plan = reconcile(str(spec), client, dry_run=False)
+
+    org_creates = [d for d in plan.diffs if d.resource_type == "organization" and d.action is Action.CREATE]
+    assert org_creates, "the unmatched fixed-id org must be created, not retargeted"
+    assert captured == [], f"no update may target the alias-matched org: {captured}"
+
+    assert fake.organizations["org-0"] == minted
+    assert fake.organizations["org-fixed"]["organization_id"] == "org-fixed"
+    assert fake.organizations["org-fixed"]["models"] == ["gpt-4o"]
+
+
+def test_fake_rejects_team_update_without_known_team_id():
+    """The fake must honestly mirror the real proxy: POST /team/update is
+    id-addressed and rejects payloads without a known team_id (no by-alias
+    fallback that would mask a reconciler regression)."""
+    from litellm_as_code.types import ReconcilerError
+
+    client, fake = make_fake_client()
+
+    # no team_id at all (alias-only regression)
+    with pytest.raises(ReconcilerError, match="team_id"):
+        fake._update_team({"team_alias": "ghost"})
+
+    # no such team (wrong id)
+    with pytest.raises(ReconcilerError, match="team_id"):
+        fake._update_team({"team_id": "nonexistent", "team_alias": "x"})
+
+    # sanity: with a real id it still works
+    fake.teams["t1"] = {"team_id": "t1", "team_alias": "x"}
+    assert fake._update_team({"team_id": "t1", "max_budget": 10.0}) == {}
+    assert fake.teams["t1"]["max_budget"] == 10.0
+
+
 def test_team_members_unresolvable_id_is_a_hard_error(ctx):
     """Issue #4 (adjacent guard): team member reconciliation with an
     unresolvable team_id (e.g. security-stripped spec passthrough) must be a
