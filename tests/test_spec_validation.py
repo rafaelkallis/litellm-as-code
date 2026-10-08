@@ -240,6 +240,36 @@ def test_id_carrying_team_and_alias_only_team_sharing_alias(tmp_path):
         load_spec(_tmp_spec(tmp_path, data))
 
 
+def test_two_alias_only_orgs_with_same_alias(tmp_path):
+    data = copy.deepcopy(VALID_SPEC)
+    data["organizations"] = [
+        {"organization_alias": "acme", "models": ["m1"]},
+        {"organization_alias": "acme", "models": ["m2"]},
+    ]
+    with pytest.raises(SpecError, match="duplicate organization_alias 'acme'"):
+        load_spec(_tmp_spec(tmp_path, data))
+
+
+def test_id_carrying_org_and_alias_only_org_sharing_alias(tmp_path):
+    data = copy.deepcopy(VALID_SPEC)
+    data["organizations"] = [
+        {"organization_id": "org-acme", "organization_alias": "acme"},
+        {"organization_alias": "acme", "models": ["m2"]},
+    ]
+    with pytest.raises(SpecError, match="duplicate organization_alias 'acme'"):
+        load_spec(_tmp_spec(tmp_path, data))
+
+
+def test_orgs_with_same_id_but_different_alias(tmp_path):
+    data = copy.deepcopy(VALID_SPEC)
+    data["organizations"] = [
+        {"organization_id": "org-x", "organization_alias": "alpha"},
+        {"organization_id": "org-x", "organization_alias": "beta"},
+    ]
+    with pytest.raises(SpecError, match="duplicate organization_id 'org-x'"):
+        load_spec(_tmp_spec(tmp_path, data))
+
+
 def test_teams_with_same_id_but_different_alias(tmp_path):
     data = copy.deepcopy(VALID_SPEC)
     data["teams"] = [
