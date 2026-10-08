@@ -611,6 +611,45 @@ def test_org_update_payload_is_member_free_and_id_pinned(ctx, tmp_path):
         assert payload["organization_id"] == "org-1", payload
 
 
+def test_alias_only_org_update_payload_pins_minted_id(ctx, tmp_path):
+    """Alias-only org: PATCH /organization/update must carry the minted remote
+    organization_id. This is the identity form for which pinning matters — the
+    id-carrying org test above would still pass even without choosing the
+    resolved id (the spec already carries it)."""
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(
+        json.dumps(
+            {
+                "organizations": [
+                    {"organization_alias": "alias-org", "models": ["gpt-4o"]}
+                ]
+            }
+        )
+    )
+    reconcile(str(spec), client, dry_run=False)
+    # the fake keys orgs by remote organization_id; resolve the id minted
+    # at create time
+    remote_id = {o["organization_alias"]: o["organization_id"] for o in client.list_organizations()}[
+        "alias-org"
+    ]
+
+    # drift a comparable org field (members untouched — there are none)
+    changed = json.loads(spec.read_text())
+    changed["organizations"][0]["models"] = ["gpt-4o-mini"]
+    spec.write_text(json.dumps(changed))
+
+    captured = _capture_org_update_payloads(client)
+    plan = reconcile(str(spec), client, dry_run=False)
+
+    org_updates = [d for d in plan.diffs if d.resource_type == "organization" and d.action is Action.UPDATE]
+    assert org_updates, "the drifted alias-only org must render an UPDATE diff"
+    assert captured, "the drifted alias-only org must be updated"
+    for payload in captured:
+        assert "members_with_roles" not in payload, payload
+        assert payload.get("organization_id") == remote_id, payload
+
+
 def test_fake_rejects_team_update_without_known_team_id():
     """The fake must honestly mirror the real proxy: POST /team/update is
     id-addressed and rejects payloads without a known team_id (no by-alias
