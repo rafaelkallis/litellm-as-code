@@ -268,6 +268,46 @@ def test_duplicate_identity_is_skipped_for_null_values(tmp_path):
         load_spec(_tmp_spec(tmp_path, data))
 
 
+@pytest.mark.parametrize(
+    ("section", "field"),
+    [
+        ("users", "user_id"),
+        ("virtual_keys", "key_alias"),
+        ("credentials", "credential_name"),
+        ("models", "model_name"),
+        ("guardrails", "guardrail_name"),
+        ("policies", "policy_name"),
+        ("budgets", "budget_id"),
+        ("teams", "team_id"),
+        ("teams", "team_alias"),
+        ("organizations", "organization_id"),
+        ("organizations", "organization_alias"),
+    ],
+)
+def test_empty_string_identity_is_rejected(tmp_path, section, field):
+    """An empty-string identity is not a valid identity: it would reconcile
+    against a bogus empty live identifier and must not be able to slip past
+    (or through) the cross-entry uniqueness check."""
+    data = copy.deepcopy(VALID_SPEC)
+    entry = dict.fromkeys((field,))
+    entry[field] = ""
+    data[section] = [entry]
+    with pytest.raises(SpecError, match=field):
+        load_spec(_tmp_spec(tmp_path, data))
+
+
+def test_empty_string_member_user_id_is_rejected(tmp_path):
+    data = copy.deepcopy(VALID_SPEC)
+    data["teams"] = [
+        {
+            "team_id": "team-prod",
+            "members_with_roles": [{"user_id": "", "role": "admin"}],
+        }
+    ]
+    with pytest.raises(SpecError, match="user_id"):
+        load_spec(_tmp_spec(tmp_path, data))
+
+
 def test_duplicate_team_member_user_id_raises(tmp_path):
     """The reconciler builds want_by_id = {user_id: role} — a repeated
     user_id would silently keep the last role."""

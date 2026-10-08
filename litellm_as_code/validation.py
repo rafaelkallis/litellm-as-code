@@ -51,6 +51,13 @@ DurationStr = Annotated[str, Field(pattern=r"^\d+(s|m|h|d|w|mo|hr|min)?$")]
 # A list of model names / routes / guardrails (strings).
 StrList = Annotated[list[str], Field(strict=False)]
 
+# Identity fields are non-empty: on an optional field an empty string counts
+# as missing (falsy to the validators and the reconcilers' identity lookups);
+# on a required field "" would reconcile against a bogus empty identity. The
+# cross-entry uniqueness check then only ever skips values that per-entry
+# validation already rejected.
+NonEmptyStr = Annotated[str, Field(min_length=1, strict=True)]
+
 
 # -- members ----------------------------------------------------------------
 
@@ -65,14 +72,14 @@ _USER_ROLE_LIST = ", ".join(sorted(_USER_ROLES))
 class OrgMember(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    user_id: str
+    user_id: NonEmptyStr
     role: OrgRole = "internal_user"
 
 
 class TeamMember(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    user_id: str
+    user_id: NonEmptyStr
     role: TeamRole = "user"
 
 
@@ -86,7 +93,7 @@ class TeamMember(BaseModel):
 class _Budget(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    budget_id: str | None = None
+    budget_id: NonEmptyStr | None = None
     max_budget: Float | None = None
     soft_budget: Float | None = None
     max_parallel_requests: int | None = None
@@ -110,8 +117,8 @@ class _Budget(BaseModel):
 class _Organization(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    organization_id: str | None = None
-    organization_alias: str | None = None
+    organization_id: NonEmptyStr | None = None
+    organization_alias: NonEmptyStr | None = None
     models: StrList | None = None
     members_with_roles: list[OrgMember] = []
 
@@ -140,7 +147,7 @@ class _Organization(BaseModel):
 class _User(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    user_id: str
+    user_id: NonEmptyStr
     user_alias: str | None = None
     user_email: str | None = None
     user_role: str | None = None
@@ -159,8 +166,8 @@ class _User(BaseModel):
 class _Team(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    team_id: str | None = None
-    team_alias: str | None = None
+    team_id: NonEmptyStr | None = None
+    team_alias: NonEmptyStr | None = None
     organization_id: str | None = None
     max_budget: Float | None = None
     budget_duration: DurationStr | None = None
@@ -190,7 +197,7 @@ class _Team(BaseModel):
 class _Key(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    key_alias: str
+    key_alias: NonEmptyStr
     key: str | None = Field(default=None, min_length=1)
     user_id: str | None = None
     team_id: str | None = None
@@ -203,7 +210,7 @@ class _Key(BaseModel):
 class _Credential(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    credential_name: str
+    credential_name: NonEmptyStr
     credential_info: dict[str, Any] = {}
     credential_values: dict[str, Any] = {}
     model_id: str | None = None
@@ -212,7 +219,7 @@ class _Credential(BaseModel):
 class _Model(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    model_name: str
+    model_name: NonEmptyStr
     model_info: dict[str, Any] = {}
     litellm_params: dict[str, Any] = {}
 
@@ -220,7 +227,7 @@ class _Model(BaseModel):
 class _Guardrail(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    guardrail_name: str
+    guardrail_name: NonEmptyStr
     litellm_params: dict[str, Any] = {}
     guardrail_info: dict[str, Any] = {}
 
@@ -228,7 +235,7 @@ class _Guardrail(BaseModel):
 class _Policy(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    policy_name: str
+    policy_name: NonEmptyStr
     inherit: str | None = None
     description: str | None = None
     guardrails_add: StrList | None = None
@@ -297,7 +304,9 @@ def _check_entry_uniqueness(
     - an id-carrying entry and an alias-only entry sharing an alias are caught
       (same wrong-team match), as are two id-carrying entries with one id.
 
-    None/missing/empty identity counts as absent and is never compared.
+    ``None``/absent identity counts as absent and is never compared. Empty
+    strings cannot reach this point on identity fields (``NonEmptyStr``
+    rejects them per-entry); the falsy skip below is defense-in-depth.
     Non-dict entries are skipped here — already reported by the per-entry path.
     """
     fields = _UNIQUE_FIELDS.get(section)
