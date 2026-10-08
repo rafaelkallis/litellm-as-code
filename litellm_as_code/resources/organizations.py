@@ -91,7 +91,12 @@ def reconcile_organizations(
             )
         )
         if changes and not dry_run:
-            client.update_organization(entry)
+            # Mirror the create path (issue #9): members are reconciled
+            # separately by reconcile_org_members and the remote id must
+            # always be pinned on PATCH /organization/update.
+            payload = {k: v for k, v in entry.items() if k != "members_with_roles"}
+            payload["organization_id"] = existing["organization_id"]
+            client.update_organization(payload)
         reconciled.append(dict(entry, _remote_org_id=existing.get("organization_id")))
 
     return diffs, reconciled

@@ -105,14 +105,18 @@ class FakeLiteLLM:
         return {"team_id": tid}
 
     def _update_team(self, payload):  # type: ignore[no-untyped-def]
-        # find by team_id if present, else by team_alias
-        if "team_id" in payload and payload["team_id"] in self.teams:
-            self.teams[payload["team_id"]].update(payload)
-            return {}
-        for t in self.teams.values():
-            if t.get("team_alias") == payload.get("team_alias"):
-                t.update(payload)
-                return {}
+        # The real proxy requires the remote team_id on POST /team/update
+        # (issue #9): reject payloads that don't carry a known one, mirroring
+        # the HTTP-layer ReconcilerError the api wrapper would raise.
+        from litellm_as_code.types import ReconcilerError
+
+        tid = payload.get("team_id")
+        if not tid or tid not in self.teams:
+            raise ReconcilerError(
+                f"POST /team/update requires a known team_id; payload carried "
+                f"team_id={tid!r}"
+            )
+        self.teams[tid].update(payload)
         return {}
 
     def _add_members(self, team_id, members):  # type: ignore[no-untyped-def]
@@ -251,14 +255,17 @@ class FakeLiteLLM:
         return out
 
     def _update_organization(self, payload):  # type: ignore[no-untyped-def]
+        # Same discipline as _update_team (issue #9): PATCH
+        # /organization/update is id-addressed; no by-alias fallback.
+        from litellm_as_code.types import ReconcilerError
+
         org_id = payload.get("organization_id")
-        if org_id and org_id in self.organizations:
-            self.organizations[org_id].update(payload)
-        else:
-            for o in self.organizations.values():
-                if o.get("organization_alias") == payload.get("organization_alias"):
-                    o.update(payload)
-                    return {}
+        if not org_id or org_id not in self.organizations:
+            raise ReconcilerError(
+                f"PATCH /organization/update requires a known organization_id; "
+                f"payload carried organization_id={org_id!r}"
+            )
+        self.organizations[org_id].update(payload)
         return {}
 
     def _delete_organization(self, org_id):  # type: ignore[no-untyped-def]

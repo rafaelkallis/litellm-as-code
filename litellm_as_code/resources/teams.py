@@ -57,7 +57,9 @@ def reconcile_teams(
         if existing is None:
             diffs.append(Diff("team", display, Action.CREATE))
             if not dry_run:
-                payload = dict(entry)
+                # Members are reconciled separately by reconcile_team_members
+                # (issue #9): never ship members_with_roles on POST /team/new.
+                payload = {k: v for k, v in entry.items() if k != "members_with_roles"}
                 if team_id:
                     payload["team_id"] = team_id
                 # POST /team/new returns the minted team_id flat at the root
@@ -100,7 +102,13 @@ def reconcile_teams(
             Diff("team", display, Action.UPDATE if changes else Action.NOOP, changes)
         )
         if changes and not dry_run:
-            client.update_team(entry)
+            # Curated payload (issue #9): never ship members_with_roles
+            # (reconciled separately), and always pin the resolved remote
+            # team_id — the real proxy requires it on /team/update, even for
+            # alias-only teams.
+            payload = {k: v for k, v in entry.items() if k != "members_with_roles"}
+            payload["team_id"] = existing["team_id"]
+            client.update_team(payload)
 
         reconciled.append(dict(entry, _remote_team_id=existing["team_id"]))
 
