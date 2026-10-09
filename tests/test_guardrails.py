@@ -16,7 +16,7 @@ import json
 import pytest
 
 from litellm_as_code.reconciler import reconcile
-from litellm_as_code.types import Action
+from litellm_as_code.types import Action, ReconcilerError
 
 from tests import make_fake_client
 
@@ -110,7 +110,7 @@ def test_guardrail_info_masked_entry_is_not_drift(tmp_path):
     # ...but a NON-secret, benign change on either side still drifts
     changed["guardrails"][0]["guardrail_info"]["description"] = "Updated"
     spec.write_text(json.dumps(changed))
-    plan2 = reconcile(spec, client, dry_run=False)
+    plan2 = reconcile(spec, client, dry_run=True)
     updates = {d.name: d for d in plan2.diffs if d.action is Action.UPDATE}
     assert "pii-guard" in updates
     assert updates["pii-guard"].changes["guardrail_info.description"] == (
@@ -119,9 +119,12 @@ def test_guardrail_info_masked_entry_is_not_drift(tmp_path):
     )
     # the change fires, but its payload would replace the live map and delete
     # the write-once secrets the spec can't re-declare — the update is
-    # DEFERRED (Copilot r2, PR #20); nothing is patched and the secret
-    # survives untouched
+    # DEFERRED (Copilot r2, PR #20): the plan surfaces it, apply REFUSES
+    # with a nonzero exit (Copilot r4) instead of silently leaving drift
     assert "deferred" in updates["pii-guard"].message
+    with pytest.raises(ReconcilerError):
+        reconcile(spec, client, dry_run=False)
+    # nothing was patched: the secrets survive untouched
     assert fake.guardrails["pii-guard"]["guardrail_info"]["description"] == (
         "PII masking"
     )
@@ -164,6 +167,39 @@ def test_dry_run_never_patches(tmp_path):
     assert fake.guardrails["pii-guard"]["guardrail_info"]["description"] == (
         "PII masking"
     )
+
+
+def test_guardrail_info_null_entry_membership_is_drift(tmp_path):
+    """`guardrail_info` is a replacement map: a key explicitly set to `None`
+    is a DIFFERENT desired state from a key that is absent — `.get()` on
+    both sides would conflate them and hide the drift in either direction
+    (Copilot r4, PR #20)."""
+    client, fake = make_fake_client()
+    spec = _write_spec(tmp_path, SPEC)
+    reconcile(spec, client, dry_run=False)
+    assert fake.guardrails["pii-guard"]["guardrail_info"] == {
+        "description": "PII masking"
+    }
+
+    # add an explicitly-None entry: absent -> explicit null is drift
+    changed = json.loads(spec.read_text())
+    changed["guardrails"][0]["guardrail_info"] = {
+        "description": "PII masking",
+        "notes": None,
+    }
+    spec.write_text(json.dumps(changed))
+    plan = reconcile(spec, client, dry_run=False)
+    updates = {d.name: d for d in plan.diffs if d.action is Action.UPDATE}
+    assert updates["pii-guard"].changes["guardrail_info.notes"][0] is None
+    assert fake.guardrails["pii-guard"]["guardrail_info"]["notes"] is None
+
+    # ...and dropping it again is drift too: explicit null -> absent
+    changed["guardrails"][0]["guardrail_info"] = {"description": "PII masking"}
+    spec.write_text(json.dumps(changed))
+    plan2 = reconcile(spec, client, dry_run=False)
+    updates2 = {d.name: d for d in plan2.diffs if d.action is Action.UPDATE}
+    assert updates2["pii-guard"].changes["guardrail_info.notes"][1] is None
+    assert "notes" not in fake.guardrails["pii-guard"]["guardrail_info"]
 
 
 def test_litellm_params_reasserted_on_patch(tmp_path):
