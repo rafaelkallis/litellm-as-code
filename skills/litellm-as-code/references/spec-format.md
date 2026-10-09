@@ -19,9 +19,11 @@ The spec is a single YAML file (default `spec.yml`, override with
 members → `teams` (+ members) → `virtual_keys` → `guardrails` → `policies`.
 
 Models come before credentials because a credential's `model_id` must reference
-an existing model. Org members come after users because the proxy validates
-user existence on `/organization/member_add` — a spec that creates a user and
-joins them to an organization in the same run converges in one pass.
+an existing model. Org members come after users because memberships attach to
+user rows the run owns — on the pinned proxy (v1.97.0, probed)
+`/organization/member_add` even upserts an unmanaged ghost user row for an
+unknown user, so the `users` section is reconciled first and its rows are what
+members attach to.
 
 ## Per-resource shapes
 
