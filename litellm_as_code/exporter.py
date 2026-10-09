@@ -355,8 +355,9 @@ def _export_keys(client: LiteLLMClient) -> list[dict[str, Any]]:
 
 _GUARDRAIL_KEYS = ["guardrail_name", "litellm_params", "guardrail_info"]
 
-# `litellm_params` may carry write-once secrets (api_key, headers, ...) and
-# `guardrail_info` is a comparable field reconciled verbatim — see
+# `litellm_params` may carry write-once secrets (api_key, headers, ...);
+# `guardrail_info` is diffed per key over its NON-SECRET subset in
+# resources/guardrails.py (masked entries carry no drift signal) — see
 # secrets.py for the shared detection rules (moved there so the export and
 # the reconcilers cannot drift apart, issue #11).
 
