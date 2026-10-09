@@ -8,6 +8,12 @@ never be compared against desired state. Both the exporter (do not persist
 masked echoes) and the reconcilers (do not diff masked echoes) need the
 SAME detection rules — keeping them in one place prevents the two from
 drifting apart (issue #11).
+
+Secret material also hides NESTED inside otherwise-benign containers, e.g.
+the supported `litellm_params.headers.Authorization` shape (plain bearer
+token under a non-sensitive key). `scrub_value` projects payloads
+recursively so neither side of the export/re-apply contract can leak or
+mis-read a nested secret (Copilot r9, PR #20).
 """
 
 from __future__ import annotations
@@ -53,20 +59,59 @@ def is_secret_entry(key: str, value: Any) -> bool:
     return is_masked_value(value)
 
 
+def scrub_value(
+    value: Any,
+    prefix: str = "",
+) -> tuple[Any, list[str]]:
+    """Recursively project a payload with its secret material removed.
+
+    Mappings are scrubbed per key: a sensitive key with a non-None value is
+    dropped whole; a masker-shaped scalar is dropped; every other dict/list
+    value is scrubbed recursively. An emptied container stays in place so
+    that "the spec declares this header map" (vacuously, after the strip)
+    stays distinguishable from "the spec declares nothing". Returns
+    (projected, dotted paths of the dropped entries).
+
+    `prefix` builds readable dotted paths ("headers.Authorization") for the
+    dropped-entries report.
+    """
+    if isinstance(value, dict):
+        clean: dict[str, Any] = {}
+        masked: list[str] = []
+        for k, v in value.items():
+            path = f"{prefix}.{k}" if prefix else k
+            if is_sensitive_key(k):  # None-valued secrets: dropped silently
+                if v is not None:
+                    masked.append(path)
+                continue
+            if is_masked_value(v):  # masker-echo scalar: carries no signal
+                masked.append(path)
+                continue
+            carved, sub = scrub_value(v, path)
+            masked.extend(sub)
+            clean[k] = carved
+        return clean, masked
+    if isinstance(value, list):
+        carved = []
+        masked = []
+        for i, item in enumerate(value):
+            path = f"{prefix}[{i}]"
+            if isinstance(item, (dict, list)):
+                item_clean, sub = scrub_value(item, path)
+                masked.extend(sub)
+                carved.append(item_clean)
+            elif is_masked_value(item):
+                masked.append(path)
+            else:
+                carved.append(item)
+        return carved, masked
+    return value, []
+
+
 def split_masked(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     """Return (clean, masked_keys) for a nested payload (e.g. guardrail
-    `litellm_params` / `guardrail_info`). Drops entries that are provably
-    masked or whose key the API would mask, keeping only non-secret
-    configuration the operator can re-declare."""
-    clean: dict[str, Any] = {}
-    masked: list[str] = []
-    for k, v in payload.items():
-        if is_sensitive_key(k):
-            if v is not None:
-                masked.append(k)
-            continue
-        if is_masked_value(v):
-            masked.append(k)
-            continue
-        clean[k] = v
-    return clean, masked
+    `litellm_params` / `guardrail_info`). Recursive: entries that are
+    provably masked, whose key the API would mask, or which hide a secret
+    below them are dropped, keeping only non-secret configuration the
+    operator can re-declare."""
+    return scrub_value(payload)

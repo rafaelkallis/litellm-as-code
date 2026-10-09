@@ -31,7 +31,7 @@ from typing import Any
 
 from ..api import LiteLLMClient
 from ..diff import comparable_diff
-from ..secrets import is_masked_value, is_secret_entry
+from ..secrets import is_masked_value, is_secret_entry, scrub_value
 from ..types import Action, Diff, ReconcilerError
 
 # Non-secret comparable fields. `litellm_params` is deliberately excluded:
@@ -83,8 +83,15 @@ def _guardrail_info_changes(want: Any, have: Any) -> dict[str, tuple[Any, Any]]:
             if in_have and is_secret_entry(k, have[k]):
                 continue
             if in_want and in_have:
-                if want_keys[k] != have[k]:
-                    changes[f"guardrail_info.{k}"] = (want_keys[k], have[k])
+                # Compare the secrets.py recursive SCRUB of both values: a
+                # nested secret (e.g. headers.Authorization) carries no drift
+                # signal, so a spec secretly-stripped one level deep must not
+                # churn against the live echo holding it (Copilot r9 on PR
+                # #20).
+                w_clean, _ = scrub_value(want_keys[k])
+                h_clean, _ = scrub_value(have[k])
+                if w_clean != h_clean:
+                    changes[f"guardrail_info.{k}"] = (w_clean, h_clean)
             elif in_want:  # spec declares, live lacks: (re)addition drift
                 changes[f"guardrail_info.{k}"] = (want_keys[k], _MISSING)
             else:  # live has, spec omits: removal drift
@@ -96,31 +103,71 @@ def _guardrail_info_changes(want: Any, have: Any) -> dict[str, tuple[Any, Any]]:
     return {"guardrail_info": (want, have)}
 
 
-def _dropped_secret_keys(entry: Any, existing: dict[str, Any]) -> list[str]:
-    """Live secret entries an update payload's `guardrail_info` would delete.
+def _secret_paths(value: Any, prefix: str = "") -> list[str]:
+    """Dotted paths of secret-shaped entries inside a mapping (Copilot r9).
 
-    The proxy replaces the nested map on PATCH, so any live secret entry
-    (sensitive key name or masker-shaped value — see secrets.py) that the
-    spec's map does not declare would be silently destroyed, and its
-    plaintext cannot be read back for re-assertion (issue #11, PR #20
-    Copilot r2). Such entries block the update.
+    Sensitive-keyed non-None entries and masker-shaped values anywhere in
+    the tree (e.g. guardrail_info.headers.Authorization) — the write-once
+    material a replacement-PATCH payload could erase.
     """
+    paths: list[str] = []
+    if isinstance(value, dict):
+        for k, v in value.items():
+            path = f"{prefix}.{k}" if prefix else k
+            if is_secret_entry(k, v):
+                paths.append(path)
+            elif isinstance(v, dict):
+                paths.extend(_secret_paths(v, path))
+    return paths
+
+
+def _dropped_secret_paths(
+    want: Any,
+    have: dict[str, Any],
+    prefix: str = "",
+) -> list[str]:
+    """Nested secret entries an update payload's `guardrail_info` would
+    delete, dotted-path keyed.
+
+    The proxy replaces the whole nested map on PATCH, so any live secret
+    entry (sensitive key name or masker-shaped value — see secrets.py) that
+    the spec's map does not re-declare with usable material (non-null,
+    non-masked) would be silently destroyed, and its plaintext cannot be
+    read back for re-assertion (issue #11, PR #20 Copilot r2 + r9). Such
+    paths block the update.
+    """
+    out: list[str] = []
+    for k, v in have.items():
+        path = f"{prefix}.{k}" if prefix else k
+        w = want.get(k) if isinstance(want, dict) else None
+        if is_secret_entry(k, v) and not _usable_reassertion(want, k, w):
+            # A null or masker-shaped spec value is not a usable
+            # re-assertion either: it would write "no secret" (or the mask)
+            # over the live write-once value.
+            out.append(path)
+        elif isinstance(v, dict):
+            if isinstance(w, dict):
+                out.extend(_dropped_secret_paths(w, v, path))
+            else:  # the spec declares nothing (or non-dict) here: the whole
+                # secret-bearing subtree goes away with the replacement
+                out.extend(_secret_paths(v, path))
+    return out
+
+
+def _usable_reassertion(want: dict[str, Any], key: str, value: Any) -> bool:
+    """True when `value` is usable desired state for a live secret node."""
+    return key in want and value is not None and not is_masked_value(value)
+
+
+def _dropped_secret_keys(entry: Any, existing: dict[str, Any]) -> list[str]:
+    """Write-once secret paths at risk in this guardrail's update payload."""
     want_info = entry.get("guardrail_info")
-    if not isinstance(want_info, dict):
-        want_info = {}
     have_info = existing.get("guardrail_info")
     if not isinstance(have_info, dict):
         return []
     return sorted(
-        k
-        for k in have_info
-        if is_secret_entry(k, have_info[k])
-        and (  # a null or masker-shaped spec value is not a usable
-            # re-assertion either: it would write "no secret" (or the mask)
-            # over the live write-once value
-            k not in want_info
-            or want_info[k] is None
-            or is_masked_value(want_info[k])
+        _dropped_secret_paths(
+            want_info if isinstance(want_info, dict) else {}, have_info
         )
     )
 

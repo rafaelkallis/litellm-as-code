@@ -279,6 +279,29 @@ def test_export_guardrail_info_masked_values_are_stripped(converged, capsys):
     assert "description" not in err
 
 
+def test_export_nested_headers_secret_stripped(converged, capsys):
+    """Secrets hide NESTED inside benign containers, e.g. the supported
+    `litellm_params.headers.Authorization` shape (Copilot r9, PR #20): the
+    recursive scrub must project the nesting, strip the bearer token, keep
+    the benign sibling entries, and name the dotted path in the WARN."""
+    client, fake = converged
+    fake.guardrails["pii-guard"]["litellm_params"] = {
+        "guardrail": "presidio",
+        "headers": {"X-Foo": "bar", "Authorization": "Bearer live-token-1"},
+        "note_list": ["benign", "abcd****xyz"],  # list: mask by value
+    }
+    exported = build_spec(client)
+    g = next(x for x in exported["guardrails"] if x["guardrail_name"] == "pii-guard")
+    assert g["litellm_params"]["headers"] == {"X-Foo": "bar"}
+    assert g["litellm_params"]["note_list"] == ["benign"]
+
+    err = capsys.readouterr().err
+    assert "masked litellm_params value(s)" in err
+    assert "'headers.Authorization'" in err
+    assert "'note_list[1]'" in err
+    assert "X-Foo" not in err
+
+
 def test_export_guardrail_info_benign_survives(converged):
     """A guardrail_info without masked values exports verbatim (unchanged
     behavior — the strip is belt-and-braces, not destructive)."""

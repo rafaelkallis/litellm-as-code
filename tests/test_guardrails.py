@@ -253,6 +253,55 @@ def test_null_desired_secret_does_not_erase_live_value(tmp_path):
     assert fake.guardrails["pii-guard"]["guardrail_info"]["api_key"] == "abcd***"
 
 
+def test_nested_secret_is_not_drift_and_is_protected(tmp_path):
+    """The same write-once contract applies NESTED (Copilot r9, PR #20): a
+    spec exporting `guardrail_info.headers` without the live Authorization
+    token must not churn; a benign nested change must not PATCH that token
+    away; and re-declaring it unblocks the update."""
+    client, fake = make_fake_client()
+    spec = _write_spec(tmp_path, SPEC)
+    reconcile(spec, client, dry_run=False)
+    fake.guardrails["pii-guard"]["guardrail_info"] = {
+        "description": "PII masking",
+        "headers": {"X-Foo": "bar", "Authorization": "Bearer live-token-1"},
+    }
+
+    # exported shape: nested secret stripped; benign siblings intact
+    changed = json.loads(spec.read_text())
+    changed["guardrails"][0]["guardrail_info"]["headers"] = {"X-Foo": "bar"}
+    spec.write_text(json.dumps(changed))
+    plan = reconcile(spec, client, dry_run=True)
+    guardrail_diffs = [d for d in plan.diffs if d.resource_type == "guardrail"]
+    assert all(d.action is Action.NOOP for d in guardrail_diffs), guardrail_diffs
+
+    # ...a benign nested change drifts — and its PATCH would erase the
+    # nested bearer token, so apply refuses
+    changed = json.loads(spec.read_text())
+    changed["guardrails"][0]["guardrail_info"]["headers"]["X-Foo"] = "baz"
+    spec.write_text(json.dumps(changed))
+    plan2 = reconcile(spec, client, dry_run=True)
+    updates = {d.name: d for d in plan2.diffs if d.action is Action.UPDATE}
+    assert "deferred" in updates["pii-guard"].message
+    with pytest.raises(ReconcilerError):
+        reconcile(spec, client, dry_run=False)
+    assert fake.guardrails["pii-guard"]["guardrail_info"]["headers"][
+        "Authorization"
+    ] == "Bearer live-token-1"
+
+    # re-declaring the nested secret (plaintext) unblocks the update
+    changed = json.loads(spec.read_text())
+    changed["guardrails"][0]["guardrail_info"]["headers"] = {
+        "X-Foo": "baz",
+        "Authorization": "Bearer fresh-token",
+    }
+    spec.write_text(json.dumps(changed))
+    reconcile(spec, client, dry_run=False)
+    assert fake.guardrails["pii-guard"]["guardrail_info"]["headers"] == {
+        "X-Foo": "baz",
+        "Authorization": "Bearer fresh-token",
+    }
+
+
 def test_litellm_params_reasserted_on_patch(tmp_path):
     """When a comparable change fires a PATCH, litellm_params is re-asserted
     (like credential_values): the update payload carries the full params and
