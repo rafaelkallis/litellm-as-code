@@ -221,6 +221,63 @@ def test_export_guardrail_masked_params_are_stripped(converged, tmp_path):
     assert "vertex_credentials" not in g["litellm_params"]
 
 
+def test_export_masked_value_wildcard_keeps_glob_values(converged, capsys):
+    """The masked-value heuristic matches the LiteLLM masker's output shape
+    (3+ trailing asterisks). A lone embedded '*' in a glob/pattern value is a
+    legitimate configuration value and must survive the export WITHOUT a
+    masked-value warn (issue #11)."""
+    client, fake = converged
+    fake.guardrails["pii-guard"]["litellm_params"] = {
+        "guardrail": "presidio",
+        "model_pattern": "openai/*",
+        "name_prefix": "gpt-4*",
+        "api_key": "abcd***",  # masker output shape -> still stripped
+    }
+    exported = build_spec(client)
+    g = next(x for x in exported["guardrails"] if x["guardrail_name"] == "pii-guard")
+    assert g["litellm_params"]["model_pattern"] == "openai/*"
+    assert g["litellm_params"]["name_prefix"] == "gpt-4*"
+    assert "api_key" not in g["litellm_params"]
+
+    err = capsys.readouterr().err
+    assert "masked litellm_params value(s)" in err
+    assert "'api_key'" in err
+    assert "model_pattern" not in err
+    assert "name_prefix" not in err
+
+
+def test_export_guardrail_info_masked_values_are_stripped(converged, capsys):
+    """guardrail_info is a comparable field exported verbatim, so a masked
+    credential echoed there must be stripped (with a WARN), exactly like
+    litellm_params — otherwise it lands in the spec in the clear and the
+    reconciler diffs a masked string as desired state (issue #11)."""
+    client, fake = converged
+    fake.guardrails["pii-guard"]["guardrail_info"] = {
+        "description": "PII masking",
+        "api_key": "abcd***",
+    }
+    exported = build_spec(client)
+    g = next(x for x in exported["guardrails"] if x["guardrail_name"] == "pii-guard")
+    assert g["guardrail_info"] == {"description": "PII masking"}
+
+    # benign values must still survive; the masked key is named in the WARN
+    err = capsys.readouterr().err
+    assert "masked guardrail_info value(s)" in err
+    assert "'api_key'" in err
+    assert "description" not in err
+
+
+def test_export_guardrail_info_benign_survives(converged):
+    """A guardrail_info without masked values exports verbatim (unchanged
+    behavior — the strip is belt-and-braces, not destructive)."""
+    client, fake = converged
+    info = fake.guardrails["pii-guard"].get("guardrail_info")
+    assert info is not None  # harness ships one
+    exported = build_spec(client)
+    g = next(x for x in exported["guardrails"] if x["guardrail_name"] == "pii-guard")
+    assert g["guardrail_info"] == info
+
+
 def test_export_team_info_failure_aborts(converged, tmp_path):
     """If a team's memberships can't be read, the export must FAIL rather than
     emit an empty members list (which re-apply would treat as delete-all)."""

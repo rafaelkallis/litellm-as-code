@@ -369,7 +369,11 @@ _GUARDRAIL_SENSITIVE_KEYWORDS = (
 
 
 def _is_sensitive_value(value: Any) -> bool:
-    return isinstance(value, str) and "*" in value
+    # LiteLLM's masker produces values like "abcd***" (3+ trailing asterisks).
+    # A lone embedded "*" in a glob/pattern value ("openai/*", "gpt-4*") is a
+    # legitimate configuration value, not a masked secret — exporting it is
+    # required for re-apply to reproduce the row (issue #11).
+    return isinstance(value, str) and value.endswith("***")
 
 
 def _export_guardrails(client: LiteLLMClient) -> list[dict[str, Any]]:
@@ -398,6 +402,25 @@ def _export_guardrails(client: LiteLLMClient) -> list[dict[str, Any]]:
                     f"masked litellm_params value(s) {sorted(masked)} are not "
                     "exported; fill them in manually (write-once)",
                 )
+        # guardrail_info is a comparable field (reconciled verbatim), so its
+        # payload must get the identical masked-value treatment — a masked
+        # credential echoed there would otherwise land in the spec in the
+        # clear and churn (or worse, be re-applied) on the next run (issue
+        # #11). Non-dict payloads stay opaque/untouched.
+        info = entry.get("guardrail_info")
+        if isinstance(info, dict):
+            filtered, masked = _strip_masked_params(info)
+            if filtered:
+                entry["guardrail_info"] = filtered
+            elif "guardrail_info" in entry:
+                del entry["guardrail_info"]
+            if masked:
+                _emit_warn(
+                    "guardrails",
+                    name,
+                    f"masked guardrail_info value(s) {sorted(masked)} are not "
+                    "exported; fill them in manually (write-once)",
+                )
         if entry:
             out.append(_empty_collections(entry))
     return out
@@ -407,8 +430,9 @@ def _strip_masked_params(
     params: dict[str, Any],
 ) -> tuple[dict[str, Any], list[str]]:
     """Return (clean_params, masked_keys). Drops values that are provably
-    masked (contain `*`) or whose key the API would mask, keeping only
-    non-secret configuration the operator can re-declare."""
+    masked (3+ trailing `*`, the masker's output shape) or whose key the API
+    would mask, keeping only non-secret configuration the operator can
+    re-declare."""
     clean: dict[str, Any] = {}
     masked: list[str] = []
     for k, v in params.items():
