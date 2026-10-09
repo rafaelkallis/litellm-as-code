@@ -189,7 +189,11 @@ def test_failing_recreate_after_delete_surfaces_and_destroys(tmp_path):
     spec.write_text(json.dumps(changed))
 
     calls: list[str] = []
-    real_delete = client.delete_policy
+    real_update, real_delete = client.update_policy, client.delete_policy
+
+    def spy_update(policy_id, payload):
+        calls.append("update")
+        return real_update(policy_id, payload)
 
     def failing_create(payload):
         calls.append("create")
@@ -199,17 +203,63 @@ def test_failing_recreate_after_delete_surfaces_and_destroys(tmp_path):
         calls.append("delete")
         return real_delete(policy_id)
 
+    client.update_policy = spy_update  # type: ignore[method-assign]
     client.delete_policy = spy_delete  # type: ignore[method-assign]
     client.create_policy = failing_create  # type: ignore[method-assign]
 
     with pytest.raises(ReconcilerError, match="POST /policies failed"):
         reconcile(spec, client, dry_run=False)
 
-    # delete happened first, the failing create was attempted, and the policy
-    # is gone (divergence worse than drift — surfaced, not hidden)
-    assert calls == ["delete", "create"]
+    # PUT-first is verified: the (rejected) PUT precedes the recreate, and
+    # delete happened only after the draft-only rejection — the key safety
+    # property of the fallback (issue #10, Copilot r3). The failing create
+    # then surfaces loudly and leaves the policy destroyed (the accepted,
+    # documented residual risk).
+    assert calls == ["update", "delete", "create"]
     assert "global-baseline" not in fake.policies
     assert "global-baseline" not in fake.policy_ids
+
+
+def test_unrelated_put_error_propagates_without_fallback(tmp_path):
+    """Only the proxy's draft-only rejection may trigger the destructive
+    recreate. Any other PUT failure (transient 5xx, auth, ...) must propagate
+    and must NOT delete/re-create the policy — it stays drifted, which is
+    strictly safer than destroying it (Copilot r3, PR #19)."""
+    client, fake = make_fake_client()
+    spec = _write_spec(tmp_path, SPEC)
+    reconcile(spec, client, dry_run=False)
+
+    changed = json.loads(spec.read_text())
+    changed["policies"][0]["description"] = "drifted but safe"
+    spec.write_text(json.dumps(changed))
+
+    calls: list[str] = []
+    real_delete, real_create = client.delete_policy, client.create_policy
+
+    def failing_update(policy_id, payload):
+        calls.append("update")
+        raise ReconcilerError("PUT /policies/{id} failed: 503 Server Error")
+
+    def spy_delete(policy_id):
+        calls.append("delete")
+        return real_delete(policy_id)
+
+    def spy_create(payload):
+        calls.append("create")
+        return real_create(payload)
+
+    client.update_policy = failing_update  # type: ignore[method-assign]
+    client.delete_policy = spy_delete  # type: ignore[method-assign]
+    client.create_policy = spy_create  # type: ignore[method-assign]
+    pid_before = fake.policy_ids["global-baseline"]
+
+    with pytest.raises(ReconcilerError, match="503 Server Error"):
+        reconcile(spec, client, dry_run=False)
+
+    # only the PUT ran; the policy was never destroyed or recreated
+    assert calls == ["update"]
+    assert "global-baseline" in fake.policies
+    assert fake.policy_ids["global-baseline"] == pid_before
 
 
 def test_dry_run_drift_reports_both_paths(tmp_path):
