@@ -31,6 +31,7 @@ class FakeLiteLLM:
         self.guardrail_ids: dict[str, str] = {}  # name -> guardrail_id
         self.policies: dict[str, dict[str, Any]] = {}  # name -> policy obj
         self.policy_ids: dict[str, str] = {}  # name -> policy_id
+        self.policy_drafts: set[str] = set()  # names whose live version is draft
 
     # -- wire up to LiteLLMClient via monkeypatched session --
     def attach(self, client: LiteLLMClient) -> None:
@@ -344,7 +345,7 @@ class FakeLiteLLM:
             {
                 "policy_id": self.policy_ids.get(name),
                 "policy_name": name,
-                "version_status": "production",
+                "version_status": "draft" if name in self.policy_drafts else "production",
                 "inherit": p.get("inherit"),
                 "description": p.get("description"),
                 "guardrails_add": p.get("guardrails_add", []),
@@ -356,19 +357,27 @@ class FakeLiteLLM:
 
     def _create_policy(self, payload):  # type: ignore[no-untyped-def]
         name = payload["policy_name"]
-        pid = f"pol-{len(self.policy_ids)}"
+        # Mint an id that is not live: after a recreate (delete + re-create,
+        # issue #10) a len()-derived id would collide with a surviving
+        # policy's id, making later PUT/delete calls target the wrong row.
+        seqs = [int(pid.rsplit("-", 1)[-1]) for pid in self.policy_ids.values()]
+        pid = f"pol-{max(seqs, default=-1) + 1}"
         self.policies[name] = dict(payload)
         self.policy_ids[name] = pid
         return {"policy_id": pid, "policy_name": name}
 
     def _update_policy(self, policy_id, payload):  # type: ignore[no-untyped-def]
         # Mirror the real proxy: PUT only applies to DRAFT versions.
-        # Published (production) policies reject updates with the proxy's
-        # exact error, forcing the reconciler's recreate path.
+        # Production policies reject updates with the proxy's exact error,
+        # forcing the reconciler's recreate fallback; drafts update in place
+        # (issue #10).
         from litellm_as_code.types import ReconcilerError
 
         for name, pid in self.policy_ids.items():
             if pid == policy_id:
+                if name in self.policy_drafts:
+                    self.policies[name].update(payload)
+                    return {"policy_id": policy_id, "policy_name": name}
                 raise ReconcilerError(
                     "PUT /policies/{id} failed: 400 Client Error: Bad Request for "
                     f"url: /policies/{policy_id} {{\"detail\":\"Only draft versions "
