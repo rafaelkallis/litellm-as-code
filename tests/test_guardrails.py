@@ -224,6 +224,35 @@ def test_spec_without_guardrail_info_clears_live_map(tmp_path):
     assert all(d.action is Action.NOOP for d in guardrail_diffs), guardrail_diffs
 
 
+def test_null_desired_secret_does_not_erase_live_value(tmp_path):
+    """A spec entry explicitly set to None on a secret-bearing live key is
+    NOT a usable re-assertion — applying it must refuse (deferred), like any
+    other loss of write-once material (Copilot r6 theme, PR #20)."""
+    client, fake = make_fake_client()
+    spec = _write_spec(tmp_path, SPEC)
+    reconcile(spec, client, dry_run=False)
+    fake.guardrails["pii-guard"]["guardrail_info"] = {
+        "description": "PII masking",
+        "api_key": "abcd***",
+    }
+
+    changed = json.loads(spec.read_text())
+    changed["guardrails"][0]["guardrail_info"]["api_key"] = None
+    # a benign change co-triggers the PATCH; the null key rides along in the
+    # replacement map and would erase the live write-once value
+    changed["guardrails"][0]["guardrail_info"]["description"] = "Updated"
+    spec.write_text(json.dumps(changed))
+
+    # plan-only: surface as a deferred update
+    plan = reconcile(spec, client, dry_run=True)
+    updates = {d.name: d for d in plan.diffs if d.action is Action.UPDATE}
+    assert "deferred" in updates["pii-guard"].message
+    # apply refuses; nothing is patched, the secret survives
+    with pytest.raises(ReconcilerError):
+        reconcile(spec, client, dry_run=False)
+    assert fake.guardrails["pii-guard"]["guardrail_info"]["api_key"] == "abcd***"
+
+
 def test_litellm_params_reasserted_on_patch(tmp_path):
     """When a comparable change fires a PATCH, litellm_params is re-asserted
     (like credential_values): the update payload carries the full params and

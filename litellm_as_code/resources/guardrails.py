@@ -115,8 +115,13 @@ def _dropped_secret_keys(entry: Any, existing: dict[str, Any]) -> list[str]:
         k
         for k in have_info
         if is_secret_entry(k, have_info[k])
-        and (k not in want_info or is_masked_value(want_info[k]))
-        # a masked-shaped spec value is not a usable re-assertion either
+        and (  # a null or masker-shaped spec value is not a usable
+            # re-assertion either: it would write "no secret" (or the mask)
+            # over the live write-once value
+            k not in want_info
+            or want_info[k] is None
+            or is_masked_value(want_info[k])
+        )
     )
 
 
