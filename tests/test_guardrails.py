@@ -117,6 +117,31 @@ def test_guardrail_info_masked_entry_is_not_drift(tmp_path):
         "Updated",
         "PII masking",
     )
+    # the change fires, but its payload would replace the live map and delete
+    # the write-once secrets the spec can't re-declare — the update is
+    # DEFERRED (Copilot r2, PR #20); nothing is patched and the secret
+    # survives untouched
+    assert "deferred" in updates["pii-guard"].message
+    assert fake.guardrails["pii-guard"]["guardrail_info"]["description"] == (
+        "PII masking"
+    )
+    assert fake.guardrails["pii-guard"]["guardrail_info"]["api_key"] == "abcd***"
+    assert fake.guardrails["pii-guard"]["guardrail_info"]["notes"] == "***"
+
+    # re-declaring the secrets (plaintext) in the spec unblocks the update:
+    # desired state now includes them, so the replace can no longer destroy
+    # write-once material it cannot re-assert
+    changed["guardrails"][0]["guardrail_info"] = {
+        "description": "Updated",
+        "api_key": "sk-live-123",
+        "notes": "note-plaintext",
+    }
+    spec.write_text(json.dumps(changed))
+    reconcile(spec, client, dry_run=False)
+    info = fake.guardrails["pii-guard"]["guardrail_info"]
+    assert info["description"] == "Updated"
+    assert info["api_key"] == "sk-live-123"
+    assert info["notes"] == "note-plaintext"
 
 
 def test_litellm_params_reasserted_on_patch(tmp_path):

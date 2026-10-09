@@ -7,10 +7,16 @@ so we resolve the id from the live list after matching by name.
 Secrets: `litellm_params` (e.g. `api_key`) is read back MASKED, like
 credentials — so it can never be diffed against live. `guardrail_info` is
 diffed per key but ONLY over its non-secret subset (sensitive key names and
-masker-shaped values carry no drift signal; see secrets.py); the secret
-subset is write-once like `litellm_params`. We also re-assert the spec's
-`litellm_params` whenever an update fires (write-once + re-assert-on-change,
-exactly like `credential_values`).
+masker-shaped values carry no drift signal; see secrets.py). We also re-assert
+the spec's `litellm_params` whenever an update fires (write-once +
+re-assert-on-change, exactly like `credential_values`).
+
+`guardrail_info` updates replace the whole nested map in-flight, so an update
+whose spec map omits a live secret entry would DELETE that write-once value
+(the plaintext cannot be read back for re-assertion). Such updates are
+DEFERRED — the diff keeps surfacing the change with a message that tells the
+operator how to unblock (declare the entry unmasked in the spec), but nothing
+is patched until then.
 
 Config-only guardrails: `/v2/guardrails/list` also returns entries loaded from
 the proxy's startup `config.yaml` with `guardrail_id=None`. Those are startup
@@ -64,6 +70,28 @@ def _guardrail_info_changes(want: Any, have: Any) -> dict[str, tuple[Any, Any]]:
     return {"guardrail_info": (want, have)}
 
 
+def _dropped_secret_keys(entry: Any, existing: dict[str, Any]) -> list[str]:
+    """Live secret entries an update payload's `guardrail_info` would delete.
+
+    The proxy replaces the nested map on PATCH, so any live secret entry
+    (sensitive key name or masker-shaped value — see secrets.py) that the
+    spec's map does not declare would be silently destroyed, and its
+    plaintext cannot be read back for re-assertion (issue #11, PR #20
+    Copilot r2). Such entries block the update.
+    """
+    want_info = entry.get("guardrail_info")
+    if not isinstance(want_info, dict):
+        want_info = {}
+    have_info = existing.get("guardrail_info")
+    if not isinstance(have_info, dict):
+        return []
+    return sorted(
+        k
+        for k in have_info
+        if is_secret_entry(k, have_info[k]) and k not in want_info
+    )
+
+
 def reconcile_guardrails(
     client: LiteLLMClient,
     spec_entries: list[dict[str, Any]],
@@ -96,19 +124,33 @@ def reconcile_guardrails(
                 entry.get("guardrail_info"), existing.get("guardrail_info")
             )
         )
-        diffs.append(
-            Diff(
-                "guardrail",
-                name,
-                Action.UPDATE if changes else Action.NOOP,
-                changes,
+        if not changes:
+            diffs.append(Diff("guardrail", name, Action.NOOP))
+            continue
+
+        at_risk = _dropped_secret_keys(entry, existing)
+        if at_risk:
+            # Writing the change would replace the live map and destroy
+            # write-once secrets the spec doesn't (and can't) re-declare:
+            # defer, and tell the operator how to unblock (Copilot r2).
+            diffs.append(
+                Diff(
+                    "guardrail",
+                    name,
+                    Action.UPDATE,
+                    changes,
+                    message="deferred: update would drop write-once guardrail_info "
+                    f"secret(s) {', '.join(at_risk)} whose plaintext cannot be "
+                    "re-asserted — declare them (unmasked) in the spec to apply",
+                )
             )
-        )
-        if changes and not dry_run:
-            payload = dict(entry)
-            # Re-assert litellm_params (secrets + non-secret config) since it
-            # cannot be diffed against the masked read-back.
-            payload.pop("guardrail_id", None)
-            client.update_guardrail(guardrail_id, payload)
+            continue
+
+        diffs.append(Diff("guardrail", name, Action.UPDATE, changes))
+        payload = dict(entry)
+        # Re-assert litellm_params (secrets + non-secret config) since it
+        # cannot be diffed against the masked read-back.
+        payload.pop("guardrail_id", None)
+        client.update_guardrail(guardrail_id, payload)
 
     return diffs
