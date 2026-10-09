@@ -345,6 +345,57 @@ def test_list_nested_secret_is_protected(tmp_path):
     ] == "Bearer fresh-token"
 
 
+def test_list_scalar_mask_keeps_index_alignment(tmp_path):
+    """Scrubbing a masked scalar from a list must keep an index placeholder
+    (Copilot r11, PR #20): live ["abcd***", "benign"] exports as
+    ["<masked>", "benign"]; without the placeholder the exported index 0
+    would be mistaken for a usable re-assertion of the live secret and a
+    benign co-change could delete it."""
+    client, fake = make_fake_client()
+    spec = _write_spec(tmp_path, SPEC)
+    reconcile(spec, client, dry_run=False)
+    fake.guardrails["pii-guard"]["guardrail_info"] = {
+        "description": "PII masking",
+        "notes_list": ["abcd***", "benign"],
+    }
+
+    # re-applying that export is a converged NOOP: the placeholder matches
+    # the live mask slot 1:1 (export shape itself is covered in
+    # tests/test_exporter.py::test_export_nested_headers_secret_stripped)
+    changed = json.loads(spec.read_text())
+    changed["guardrails"][0]["guardrail_info"] = {
+        "description": "PII masking",
+        "notes_list": ["<masked>", "benign"],
+    }
+    spec.write_text(json.dumps(changed))
+    plan0 = reconcile(spec, client, dry_run=True)
+    guardrail_diffs = [d for d in plan0.diffs if d.resource_type == "guardrail"]
+    assert all(d.action is Action.NOOP for d in guardrail_diffs), guardrail_diffs
+
+    # ...a benign edit of the non-secret element drifts, but the update must
+    # NOT be allowed to write over the live masked slot 0
+    changed["guardrails"][0]["guardrail_info"]["notes_list"][1] = "changed"
+    spec.write_text(json.dumps(changed))
+    with pytest.raises(ReconcilerError):
+        reconcile(spec, client, dry_run=False)
+    assert fake.guardrails["pii-guard"]["guardrail_info"]["notes_list"] == [
+        "abcd***",
+        "benign",
+    ]
+
+    # re-declaring slot 0 (plaintext) unblocks the update
+    changed["guardrails"][0]["guardrail_info"]["notes_list"] = [
+        "real-secret",
+        "changed",
+    ]
+    spec.write_text(json.dumps(changed))
+    reconcile(spec, client, dry_run=False)
+    assert fake.guardrails["pii-guard"]["guardrail_info"]["notes_list"] == [
+        "real-secret",
+        "changed",
+    ]
+
+
 def test_litellm_params_reasserted_on_patch(tmp_path):
     """When a comparable change fires a PATCH, litellm_params is re-asserted
     (like credential_values): the update payload carries the full params and

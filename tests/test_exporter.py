@@ -293,7 +293,9 @@ def test_export_nested_headers_secret_stripped(converged, capsys):
     exported = build_spec(client)
     g = next(x for x in exported["guardrails"] if x["guardrail_name"] == "pii-guard")
     assert g["litellm_params"]["headers"] == {"X-Foo": "bar"}
-    assert g["litellm_params"]["note_list"] == ["benign"]
+    # scrubbed list elements keep an index placeholder so later elements
+    # stay aligned with the live vector (Copilot r11, PR #20)
+    assert g["litellm_params"]["note_list"] == ["benign", "<masked>"]
 
     err = capsys.readouterr().err
     assert "masked litellm_params value(s)" in err

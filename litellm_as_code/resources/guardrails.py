@@ -31,7 +31,12 @@ from typing import Any
 
 from ..api import LiteLLMClient
 from ..diff import comparable_diff
-from ..secrets import is_masked_value, is_secret_entry, scrub_value
+from ..secrets import (
+    MASK_PLACEHOLDER,
+    is_masked_value,
+    is_secret_entry,
+    scrub_value,
+)
 from ..types import Action, Diff, ReconcilerError
 
 # Non-secret comparable fields. `litellm_params` is deliberately excluded:
@@ -93,9 +98,14 @@ def _guardrail_info_changes(want: Any, have: Any) -> dict[str, tuple[Any, Any]]:
                 if w_clean != h_clean:
                     changes[f"guardrail_info.{k}"] = (w_clean, h_clean)
             elif in_want:  # spec declares, live lacks: (re)addition drift
-                changes[f"guardrail_info.{k}"] = (want_keys[k], _MISSING)
+                # scrub even the one-sided value: nested secrets must never
+                # reach Diff.changes and be rendered into dry-run/log output
+                # (Copilot r11 on PR #20)
+                w_clean, _ = scrub_value(want_keys[k])
+                changes[f"guardrail_info.{k}"] = (w_clean, _MISSING)
             else:  # live has, spec omits: removal drift
-                changes[f"guardrail_info.{k}"] = (_MISSING, have[k])
+                h_clean, _ = scrub_value(have[k])
+                changes[f"guardrail_info.{k}"] = (_MISSING, h_clean)
         return changes
     # not a dict on the live side: comparable_diff semantics (exact value)
     if want == have:
@@ -180,9 +190,14 @@ def _declared(want: Any, key: Any) -> Any:
 
 def _usable_reassertion(declared: Any) -> bool:
     """True when the spec's declared value is usable desired state for a
-    live secret node: present, non-null and not a masker echo (null/masked
-    would write "no secret" / the mask over the write-once value)."""
-    return declared is not None and not is_masked_value(declared)
+    live secret node: present, non-null and neither a masker echo nor the
+    export placeholder (null/masked/placeholder would write "no secret",
+    the mask, or nothing over the write-once value)."""
+    return (
+        declared is not None
+        and not is_masked_value(declared)
+        and declared != MASK_PLACEHOLDER
+    )
 
 
 def _dropped_secret_keys(entry: Any, existing: dict[str, Any]) -> list[str]:

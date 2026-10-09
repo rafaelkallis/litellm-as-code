@@ -40,6 +40,21 @@ def is_sensitive_key(key: str) -> bool:
     return any(kw in k for kw in SENSITIVE_KEYWORDS)
 
 
+# Placeholder left in place of a scrubbed LIST element: removing the entry
+# would shift every later index and desynchronize index-based reconciliation
+# (Copilot r11 on PR #20). The marker is deliberately NOT a secret-matched
+# shape; re-declaring the plaintext simply replaces it.
+MASK_PLACEHOLDER = "<masked>"
+
+
+# Placeholder left in place of a scrubbed LIST element: removing the entry
+# would shift every later index and desynchronize index-based reconciliation
+# (Copilot r11 on PR #20). The marker is deliberately NOT a secret-matched
+# shape — `is_masked_value` is False on it, nothing looks like "usable"
+# re-assertion, and operators re-declaring the plaintext simply replace it.
+MASK_PLACEHOLDER = "<masked>"
+
+
 def is_masked_value(value: Any) -> bool:
     # LiteLLM's masker keeps a short prefix/suffix and produces an interior
     # asterisk run ("ab****cd"), or "*****" for short values — so the shape
@@ -101,7 +116,10 @@ def scrub_value(
                 masked.extend(sub)
                 carved.append(item_clean)
             elif is_masked_value(item):
+                # keep a placeholder so later indices stay aligned with the
+                # live vector (Copilot r11 on PR #20)
                 masked.append(path)
+                carved.append(MASK_PLACEHOLDER)
             else:
                 carved.append(item)
         return carved, masked
@@ -112,6 +130,7 @@ def split_masked(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     """Return (clean, masked_keys) for a nested payload (e.g. guardrail
     `litellm_params` / `guardrail_info`). Recursive: entries that are
     provably masked, whose key the API would mask, or which hide a secret
-    below them are dropped, keeping only non-secret configuration the
+    below them are dropped (list elements keep a MASK_PLACEHOLDER slot so
+    indices stay aligned), keeping only non-secret configuration the
     operator can re-declare."""
     return scrub_value(payload)

@@ -76,6 +76,12 @@ identity/drift table above:
   empty/fill-in placeholders and omits `key`. Re-applying an export produces a
   **behavior-equivalent** deployment, not a byte-identical one (keys are
   freshly minted; credential values are re-entered by the operator).
+- The same write-once rule covers guardrails: `litellm_params` and
+  `guardrail_info` secrets (including nested ones like
+  `guardrail_info.headers.Authorization`) are recursively scrubbed on export
+  and skipped by the reconciler's per-key diff; scrubbed list elements keep a
+  `"<masked>"` index placeholder. An update that would erase a live secret the
+  spec cannot re-declare is deferred with a non-zero apply exit.
 - The exported file passes the same `load_spec` validation as a hand-written
   spec, and re-applying it to the source proxy is a clean no-op.
 
