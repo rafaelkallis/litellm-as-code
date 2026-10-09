@@ -12,7 +12,7 @@ import json
 import pytest
 
 from litellm_as_code.reconciler import reconcile
-from litellm_as_code.types import Action
+from litellm_as_code.types import Action, ReconcilerError
 
 from tests import make_fake_client
 
@@ -130,3 +130,99 @@ def test_dry_run_does_not_create(tmp_path):
 
     assert plan.create_count == 2
     assert len(fake.policies) == 0
+
+
+def test_draft_policy_drift_updates_in_place(tmp_path):
+    """A DRAFT policy accepts PUT, so drift must be reconciled in place —
+    no delete, no re-create, no burned version-history entry (issue #10)."""
+    client, fake = make_fake_client()
+    spec = _write_spec(tmp_path, SPEC)
+    reconcile(spec, client, dry_run=False)
+
+    # the live policy is a draft: operators create drafts outside the spec
+    fake.policy_drafts.add("global-baseline")
+    pid_before = fake.policy_ids["global-baseline"]
+
+    calls: list[str] = []
+    real_delete, real_create = client.delete_policy, client.create_policy
+
+    def spy_delete(policy_id):
+        calls.append("delete")
+        return real_delete(policy_id)
+
+    def spy_create(payload):
+        calls.append("create")
+        return real_create(payload)
+
+    client.delete_policy = spy_delete  # type: ignore[method-assign]
+    client.create_policy = spy_create  # type: ignore[method-assign]
+
+    changed = json.loads(spec.read_text())
+    changed["policies"][0]["description"] = "draft-edited baseline"
+    spec.write_text(json.dumps(changed))
+
+    plan = reconcile(spec, client, dry_run=False)
+    updates = {d.name: d for d in plan.diffs if d.action is Action.UPDATE}
+    assert "global-baseline" in updates
+    assert updates["global-baseline"].message == "updated in place (draft PUT)"
+
+    # PUT path only: no delete, no re-create, identity (policy_id) preserved
+    assert calls == []
+    assert fake.policies["global-baseline"]["description"] == "draft-edited baseline"
+    assert fake.policy_ids["global-baseline"] == pid_before
+
+
+def test_failing_recreate_after_delete_surfaces_and_destroys(tmp_path):
+    """A publish-locked policy whose PUT is rejected is deleted and re-created;
+    if the re-create then fails, the exception must surface loudly (not be
+    swallowed) and the destroyed state must be visible (.accepted residual
+    non-atomicity, documented in resources/policies.py — issue #10)."""
+    client, fake = make_fake_client()
+    spec = _write_spec(tmp_path, SPEC)
+    reconcile(spec, client, dry_run=False)
+
+    changed = json.loads(spec.read_text())
+    changed["policies"][0]["description"] = "will fail to recreate"
+    spec.write_text(json.dumps(changed))
+
+    calls: list[str] = []
+    real_delete = client.delete_policy
+
+    def failing_create(payload):
+        calls.append("create")
+        raise ReconcilerError("POST /policies failed: 503 Server Error")
+
+    def spy_delete(policy_id):
+        calls.append("delete")
+        return real_delete(policy_id)
+
+    client.delete_policy = spy_delete  # type: ignore[method-assign]
+    client.create_policy = failing_create  # type: ignore[method-assign]
+
+    with pytest.raises(ReconcilerError, match="POST /policies failed"):
+        reconcile(spec, client, dry_run=False)
+
+    # delete happened first, the failing create was attempted, and the policy
+    # is gone (divergence worse than drift — surfaced, not hidden)
+    assert calls == ["delete", "create"]
+    assert "global-baseline" not in fake.policies
+    assert "global-baseline" not in fake.policy_ids
+
+
+def test_dry_run_drift_reports_both_paths(tmp_path):
+    """In dry-run the reconciler cannot probe the PUT (it would mutate a
+    draft), so the plan message must name both possible apply outcomes."""
+    client, fake = make_fake_client()
+    spec = _write_spec(tmp_path, SPEC)
+    reconcile(spec, client, dry_run=False)
+
+    changed = json.loads(spec.read_text())
+    changed["policies"][0]["description"] = "planned change"
+    spec.write_text(json.dumps(changed))
+
+    plan = reconcile(spec, client, dry_run=True)
+    updates = {d.name: d for d in plan.diffs if d.action is Action.UPDATE}
+    assert updates["global-baseline"].message == (
+        "update (draft PUT) or recreate (production)"
+    )
+    assert len(fake.policies) == 2  # nothing mutated

@@ -15,9 +15,13 @@ them.
 
 Versioning: policies are versioned. `PUT /policies/{id}` only accepts DRAFT
 versions — published/production rows reject updates ("Only draft versions can
-be updated"). This proxy exposes no versioning API, so a drifted policy is
-recreated (delete + re-create under the same `policy_name`, which creates a
-new production version).
+be updated"). Drift is therefore reconciled PUT-first: a draft policy is
+updated in place; a publish-locked policy falls back to delete + re-create
+under the same `policy_name` (which creates a new production version). NOTE
+the fallback is NOT atomic: if the re-create fails the policy is left
+destroyed (worse than drift). That residual risk is accepted deliberately
+(issue #10) — it surfaces loudly through the CLI error path rather than
+silently.
 
 Mutation: POST /policies | PUT /policies/{id} (drafts) | DELETE /policies/{id}.
 """
@@ -28,7 +32,7 @@ from typing import Any
 
 from ..api import LiteLLMClient
 from ..diff import comparable_diff
-from ..types import Action, Diff
+from ..types import Action, Diff, ReconcilerError
 
 # Manageable policy fields. `condition` / `pipeline` are left out deliberately
 # (newer features kept opaque in the spec).
@@ -87,13 +91,26 @@ def reconcile_policies(
             diffs.append(Diff("policy", name, Action.NOOP))
             continue
 
-        # Published policies reject PUT (only drafts are updatable) and the
-        # proxy has no versioning endpoint — recreate instead.
-        diffs.append(
-            Diff("policy", name, Action.UPDATE, changes, message="recreate (new version)")
-        )
+        # Prefer the in-place PUT: draft versions accept it and it does not
+        # burn a version-history entry. Published/production policies reject
+        # PUT with the proxy's draft-only error; only then fall back to
+        # recreate (delete + re-create; see module docstring for the accepted
+        # non-atomicity) — issue #10.
+        diff = Diff("policy", name, Action.UPDATE, changes)
+        diffs.append(diff)
         if not dry_run:
-            client.delete_policy(policy_id)
-            client.create_policy(entry)
+            try:
+                client.update_policy(policy_id, entry)
+                diff.message = "updated in place (draft PUT)"
+            except ReconcilerError as e:
+                if "Only draft versions" not in str(e):
+                    raise
+                diff.message = "recreate (draft-only PUT rejected)"
+                client.delete_policy(policy_id)
+                client.create_policy(entry)
+        else:
+            # Dry-run cannot probe the PUT without mutating a draft; report
+            # both outcomes the apply could take.
+            diff.message = "update (draft PUT) or recreate (production)"
 
     return diffs
