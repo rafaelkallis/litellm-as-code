@@ -441,6 +441,30 @@ def test_litellm_params_nested_secret_is_protected(tmp_path):
     }
 
 
+def test_nondict_guardrail_info_secret_scrubbed_in_plan(tmp_path):
+    """Regression (Copilot r13, PR #20): when the live guardrail_info is
+    non-dict (or None) while the spec's map carries a secret-shaped entry,
+    the fallback must scrub before recording the change — otherwise the raw
+    secret renders into dry-run/log output."""
+    client, fake = make_fake_client()
+    spec = _write_spec(tmp_path, SPEC)
+    reconcile(spec, client, dry_run=False)
+    fake.guardrails["pii-guard"]["guardrail_info"] = None
+
+    changed = json.loads(spec.read_text())
+    changed["guardrails"][0]["guardrail_info"] = {
+        "description": "PII masking",
+        "Authorization": "Bearer plaintext-do-not-log",
+    }
+    spec.write_text(json.dumps(changed))
+
+    plan = reconcile(spec, client, dry_run=True)
+    updates = [d for d in plan.diffs if d.action is Action.UPDATE]
+    assert updates
+    assert "Bearer plaintext-do-not-log" not in str(updates)
+    assert "Authorization" not in updates[0].changes  # scrubbed, not leaked
+
+
 def test_litellm_params_reasserted_on_patch(tmp_path):
     """When a comparable change fires a PATCH, litellm_params is re-asserted
     (like credential_values): the update payload carries the full params and

@@ -109,10 +109,15 @@ def _guardrail_info_changes(want: Any, have: Any) -> dict[str, tuple[Any, Any]]:
                 h_clean, _ = scrub_value(have[k])
                 changes[f"guardrail_info.{k}"] = (_MISSING, h_clean)
         return changes
-    # not a dict on the live side: comparable_diff semantics (exact value)
-    if want == have:
+    # not a dict on the live side: comparable_diff semantics (exact value),
+    # but with BOTH sides scrubbed first — a desired dict can still carry
+    # write-once material, and the raw tuple would render it into plan
+    # output (Copilot r13 on PR #20)
+    w_clean, _ = scrub_value(want)
+    h_clean, _ = scrub_value(have)
+    if w_clean == h_clean:
         return {}
-    return {"guardrail_info": (want, have)}
+    return {"guardrail_info": (w_clean, h_clean)}
 
 
 def _secret_paths(value: Any, prefix: str = "") -> list[str]:
