@@ -233,9 +233,13 @@ def _usable_reassertion(declared: Any, live: Any) -> bool:
             _usable_reassertion(declared[i], v)
             for i, v in enumerate(live)
         )
-    # scalar live value: a(n empty) container is not a re-assertion
+    # scalar live value: a container is never a re-assertion of it — no
+    # matter how it is filled, the PATCH would replace the scalar secret
+    # with different-shaped state (Copilot r16 note on PR #20: only the
+    # empty case was excluded before; a non-empty container over e.g.
+    # `api_key` would still erase the write-once scalar)
     if isinstance(declared, (dict, list)):
-        return bool(declared)
+        return False
     return True
 
 
