@@ -60,12 +60,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--base-url",
         default=os.environ.get("LITELLM_BASE_URL") or os.environ.get("BASE_URL"),
-        help="LiteLLM proxy base URL (env: LITELLM_BASE_URL)",
+        help="LiteLLM proxy base URL (env: LITELLM_BASE_URL / BASE_URL)",
     )
     p.add_argument(
         "--api-key",
         default=os.environ.get("LITELLM_API_KEY") or os.environ.get("API_KEY"),
-        help="admin API key (env: LITELLM_API_KEY)",
+        help="admin API key (env: LITELLM_API_KEY / API_KEY)",
     )
     p.add_argument(
         "--dry-run",
@@ -103,12 +103,12 @@ def build_export_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--base-url",
         default=os.environ.get("LITELLM_BASE_URL") or os.environ.get("BASE_URL"),
-        help="LiteLLM proxy base URL (env: LITELLM_BASE_URL)",
+        help="LiteLLM proxy base URL (env: LITELLM_BASE_URL / BASE_URL)",
     )
     p.add_argument(
         "--api-key",
         default=os.environ.get("LITELLM_API_KEY") or os.environ.get("API_KEY"),
-        help="admin API key (env: LITELLM_API_KEY)",
+        help="admin API key (env: LITELLM_API_KEY / API_KEY)",
     )
     return p
 
