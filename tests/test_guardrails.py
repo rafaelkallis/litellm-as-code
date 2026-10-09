@@ -538,3 +538,56 @@ def test_config_only_guardrails_are_ignored(tmp_path):
     # config-only entry is not a match for DB identity, so the spec creates one
     creates = [d for d in plan.diffs if d.action is Action.CREATE]
     assert [d.name for d in creates] == ["pii-guard"]
+
+
+def test_container_reassertion_cannot_bypass_protection(tmp_path):
+    """Copilot r15, PR #20: an empty or partially declared container over a
+    live secret value is NOT a usable re-assertion. The replacement PATCH
+    would erase the write-once material while looking like intentional
+    desired state, so each such update must defer and the secrets survive."""
+    client, fake = make_fake_client()
+    spec = _write_spec(tmp_path, SPEC)
+    reconcile(spec, client, dry_run=False)
+    fake.guardrails["pii-guard"]["guardrail_info"] = {
+        "description": "PII masking",
+        "api_key": "abcd***",  # masked echo of a write-once secret
+        "credentials": {"env": "prod", "api_token": "abcd***"},
+    }
+
+    # empty container over a secret scalar: benign co-change + api_key: {}
+    changed = json.loads(spec.read_text())
+    info = changed["guardrails"][0]["guardrail_info"]
+    info["description"] = "Updated"
+    info["api_key"] = {}
+    spec.write_text(json.dumps(changed))
+    with pytest.raises(ReconcilerError):
+        reconcile(spec, client, dry_run=False)
+    live = fake.guardrails["pii-guard"]["guardrail_info"]
+    assert live["description"] == "PII masking"
+    assert live["api_key"] == "abcd***"
+    assert live["credentials"] == {"env": "prod", "api_token": "abcd***"}
+
+    # partially declared sensitive mapping: credentials without api_token
+    # would silently drop the uncovered entry in the replacement
+    info["api_key"] = "sk-new"
+    info["credentials"] = {"env": "prod"}
+    spec.write_text(json.dumps(changed))
+    with pytest.raises(ReconcilerError):
+        reconcile(spec, client, dry_run=False)
+    assert fake.guardrails["pii-guard"]["guardrail_info"]["credentials"][
+        "api_token"
+    ] == "abcd***"
+
+    # a complete, structural re-declaration of both nodes unblocks the update
+    changed["guardrails"][0]["guardrail_info"] = {
+        "description": "Updated",
+        "api_key": "sk-new",
+        "credentials": {"env": "prod", "api_token": "fresh-token"},
+    }
+    spec.write_text(json.dumps(changed))
+    reconcile(spec, client, dry_run=False)
+    assert fake.guardrails["pii-guard"]["guardrail_info"] == {
+        "description": "Updated",
+        "api_key": "sk-new",
+        "credentials": {"env": "prod", "api_token": "fresh-token"},
+    }

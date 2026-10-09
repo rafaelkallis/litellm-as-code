@@ -175,7 +175,7 @@ def _dropped_secret_paths(
             )
         )
         w = _declared(want, k)
-        if is_secret_entry(str(k), v) and not _usable_reassertion(w):
+        if is_secret_entry(str(k), v) and not _usable_reassertion(w, v):
             # the spec is absent/null/masked here — a null or masker-shaped
             # spec value is not a usable re-assertion either: it would write
             # "no secret" (or the mask) over the live write-once value
@@ -198,16 +198,45 @@ def _declared(want: Any, key: Any) -> Any:
     return None
 
 
-def _usable_reassertion(declared: Any) -> bool:
-    """True when the spec's declared value is usable desired state for a
-    live secret node: present, non-null and neither a masker echo nor the
-    export placeholder (null/masked/placeholder would write "no secret",
-    the mask, or nothing over the write-once value)."""
-    return (
-        declared is not None
-        and not is_masked_value(declared)
-        and declared != MASK_PLACEHOLDER
-    )
+def _usable_reassertion(declared: Any, live: Any) -> bool:
+    """True when the spec's declared value can stand in for the live secret
+    node without destroying write-once material (Copilot r15 on PR #20).
+
+    Scalar live value: declared must be present, non-null, neither a
+    masker echo nor the export placeholder, and — a container is NOT usable
+    over a scalar secret (`api_key: {}` would erase the live value while
+    looking like an intentional re-declaration).
+
+    Container live value: the declared counterpart must be the SAME
+    container type, non-empty, structurally COMPLETE (every live key/list
+    element is covered) — a partially declared sensitive mapping would
+    silently drop the uncovered entries in the replacement PATCH — and
+    recursively usable at every covered position.
+    """
+    if (
+        declared is None
+        or is_masked_value(declared)
+        or declared == MASK_PLACEHOLDER
+    ):
+        return False
+    if isinstance(live, dict):
+        if not isinstance(declared, dict) or not declared:
+            return False
+        return all(
+            _usable_reassertion(_declared(declared, k), v)
+            for k, v in live.items()
+        )
+    if isinstance(live, list):
+        if not isinstance(declared, list) or len(declared) < len(live):
+            return False
+        return all(
+            _usable_reassertion(declared[i], v)
+            for i, v in enumerate(live)
+        )
+    # scalar live value: a(n empty) container is not a re-assertion
+    if isinstance(declared, (dict, list)):
+        return bool(declared)
+    return True
 
 
 def _dropped_secret_keys(entry: Any, existing: dict[str, Any]) -> list[str]:
