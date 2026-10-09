@@ -115,8 +115,8 @@ LiteLLM's Admin UI is at `http://localhost:4000/ui` (log in with
 state**: budgets, organizations, users, teams, virtual keys, credentials,
 models, guardrails, and policies. The reconciler diffs it against the live
 admin REST API and applies only the deltas, in the fixed order
-`budgets → organizations → users → teams → keys → credentials → models →
-guardrails → policies`.
+`budgets → models → credentials → organizations → users → org members →
+teams (+ members) → keys → guardrails → policies`.
 
 Things the reconciler deliberately does **not** manage:
 

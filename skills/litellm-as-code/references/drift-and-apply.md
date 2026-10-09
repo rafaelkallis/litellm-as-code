@@ -57,11 +57,16 @@ returning non-zero) — it is **not** an error, just "there is work to do."
 
 ## Reconcile ordering (fixed)
 
-`budgets` → `models` → `credentials` → `organizations` (+ members) → `users` →
-`teams` (+ members) → `virtual_keys` → `guardrails` → `policies`.
+`budgets` → `models` → `credentials` → `organizations` → `users` → org
+members → `teams` (+ members) → `virtual_keys` → `guardrails` → `policies`.
 
 Models before credentials matters: a credential's `model_id` must reference an
-existing model (`POST /credentials` 404s otherwise). Acyclic, single-target.
+existing model (`POST /credentials` 404s otherwise). Org members after users
+matters too: memberships attach to user rows the run owns — on the pinned
+proxy (v1.97.0, probed) `/organization/member_add` even upserts an unmanaged
+ghost user row for an unknown user, so the `users` section is reconciled
+first and its rows are what members attach to (team members were always
+after `users` for the same reason). Acyclic, single-target.
 
 ## Export (reverse direction, read-only)
 

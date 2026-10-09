@@ -40,8 +40,28 @@ def _write_spec(tmp_path, data):
     return path
 
 
+def _seed_users(fake) -> None:
+    """Pre-existing proxy users (adoption flows).
+
+    These specs manage members whose users were created before
+    litellm-as-code took over. Seeding keeps these tests about member
+    reconciliation; for specs whose users are created in the same run, the
+    fake mirrors the pinned proxy's member_add upsert behavior instead
+    (issue #12, probed live): an unknown user materializes as a ghost row
+    with the server-default role.
+    """
+    for uid in ("u1", "u2"):
+        fake.users[uid] = {
+            "user_id": uid,
+            "user_alias": uid,
+            "user_role": "internal_user",
+            "auto_create_key": "false",
+        }
+
+
 def test_first_run_creates_orgs_and_members(tmp_path):
     client, fake = make_fake_client()
+    _seed_users(fake)
     spec = _write_spec(tmp_path, SPEC)
 
     plan = reconcile(spec, client, dry_run=False)
@@ -54,6 +74,7 @@ def test_first_run_creates_orgs_and_members(tmp_path):
 
 def test_second_run_is_noop(tmp_path):
     client, fake = make_fake_client()
+    _seed_users(fake)
     spec = _write_spec(tmp_path, SPEC)
 
     reconcile(spec, client, dry_run=False)
@@ -67,6 +88,7 @@ def test_second_run_is_noop(tmp_path):
 
 def test_drift_detects_alias_change(tmp_path):
     client, fake = make_fake_client()
+    _seed_users(fake)
     spec = _write_spec(tmp_path, SPEC)
     reconcile(spec, client, dry_run=False)
 
@@ -85,6 +107,7 @@ def test_drift_detects_alias_change(tmp_path):
 
 def test_member_role_update_and_removal(tmp_path):
     client, fake = make_fake_client()
+    _seed_users(fake)
     spec = _write_spec(tmp_path, SPEC)
     reconcile(spec, client, dry_run=False)
 
@@ -116,6 +139,7 @@ def test_org_member_role_omitted_does_not_churn(tmp_path):
     the server's defaulted echo (issue #7) — and a role-less
     /organization/member_update can never fire (the fake asserts on it)."""
     client, fake = make_fake_client()
+    _seed_users(fake)
     spec_data = json.loads(json.dumps(SPEC))
     spec_data["organizations"][0]["members_with_roles"] = [{"user_id": "u1"}]
     spec = _write_spec(tmp_path, spec_data)
@@ -141,3 +165,37 @@ def test_dry_run_does_not_create(tmp_path):
     assert plan.create_count == 4  # 2 orgs + 2 member placeholders
     assert len(fake.organizations) == 0
     assert fake.org_members == {}
+
+
+def test_org_member_role_unset_on_read_does_not_churn(tmp_path):
+    """Issue #12: a read that leaves user_role unset must compare against the
+    resolved server default, not read as perpetual role churn — while an
+    explicit spec role still fires member_update (single-direction). The
+    pinned proxy always echoes member roles (probed live), so this pins a
+    convergence guarantee for the spec-omits-role shape rather than an
+    observed drift class."""
+    client, fake = make_fake_client()
+    _seed_users(fake)
+    spec = _write_spec(tmp_path, SPEC)
+    reconcile(spec, client, dry_run=False)
+
+    # u2's spec role is internal_user (the org default): unset on read must
+    # not read as drift.
+    fake.org_members[("org-acme", "u2")] = None
+    plan = reconcile(spec, client, dry_run=False)
+    member_updates = [
+        d
+        for d in plan.diffs
+        if d.resource_type == "organization_member" and d.action is Action.UPDATE
+    ]
+    assert member_updates == [], member_updates
+
+    # u1's spec role is explicit (org_admin): that must still diff.
+    fake.org_members[("org-acme", "u1")] = None
+    plan = reconcile(spec, client, dry_run=True)
+    updates = {
+        d.name: d
+        for d in plan.diffs
+        if d.resource_type == "organization_member" and d.action is Action.UPDATE
+    }
+    assert updates["acme/u1"].changes["role"] == ("internal_user", "org_admin")

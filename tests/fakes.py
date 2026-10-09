@@ -278,10 +278,27 @@ class FakeLiteLLM:
         return {}
 
     def _add_org_members(self, org_id, members):  # type: ignore[no-untyped-def]
+        # Mirror the pinned proxy (v1.97.0, probed live, issue #12):
+        # /organization/member_add does NOT reject a user row the proxy has
+        # never seen — it UPSERTS an unmanaged "ghost" user row (the requested
+        # org role becomes the server-default user_role; user_alias and
+        # user_email stay unset). The reconciler therefore orders org members
+        # AFTER users so the spec-declared user row is created first and no
+        # ghost row is ever left behind.
         for m in members:
+            uid = m["user_id"]
+            self.users.setdefault(
+                uid,
+                {
+                    "user_id": uid,
+                    "user_alias": None,
+                    "user_email": None,
+                    "user_role": m.get("role") or "internal_user",
+                },
+            )
             # Mirror the real proxy: an omitted role is server-defaulted and
             # echoed back on the next read (issue #7).
-            self.org_members[(org_id, m["user_id"])] = m["role"] or "internal_user"
+            self.org_members[(org_id, uid)] = m["role"] or "internal_user"
         return {}
 
     def _update_org_member(self, org_id, user_id, role=None):  # type: ignore[no-untyped-def]

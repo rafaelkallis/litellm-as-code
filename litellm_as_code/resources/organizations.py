@@ -144,8 +144,18 @@ def reconcile_org_members(
             for m in want
             if m.get("user_id")
         }
+        # The spec side may omit the role (issue #7): the shared server
+        # default is resolved inline at BOTH comparison sides so an unset
+        # value can never churn (issue #12). The pinned proxy (v1.97.0,
+        # probed) always echoes member roles — making the live side symmetric
+        # to the want side is a convergence guarantee, not an observed drift
+        # class. Single-direction: an explicit spec role still diffs and
+        # fires member_update. (Org member rows echo `user_role`; team rows
+        # echo `role`.)
         live_by_user = {
-            m.get("user_id"): m.get("user_role") for m in live_members if m.get("user_id")
+            m.get("user_id"): m.get("user_role") or DEFAULT_ORG_ROLE
+            for m in live_members
+            if m.get("user_id")
         }
 
         for uid, role in want_by_id.items():

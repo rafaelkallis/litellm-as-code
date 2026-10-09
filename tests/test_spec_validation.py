@@ -128,6 +128,15 @@ def test_valid_full_spec_is_passed_through(tmp_path):
     assert spec["models"][0]["litellm_params"]["model"] == "hosted_vllm/some-chat-model"
 
 
+def test_omitted_or_null_section_passes_validation(tmp_path):
+    """An explicitly-null section (YAML `users:` with no value) reaches
+    validate_spec as None and passes cleanly: the `data.get(section, []) or
+    []` normalization already turns None into [] — which is what made the
+    `if entries is None` branch dead code (issue #12 Part C, pinned here so
+    any future normalization change must account for it)."""
+    load_spec(_tmp_spec(tmp_path, {"users": None}))  # must not raise
+
+
 # -- required identity fields ------------------------------------------------
 
 

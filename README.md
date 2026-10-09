@@ -109,7 +109,7 @@ uvx litellm-as-code export spec.yml --base-url "$LITELLM_BASE_URL" --api-key "$L
 What you get:
 
 - every **comparable** (manageable) field across `budgets`, `models`,
-  `credentials`, `organizations` (+ members), `users`, `teams` (+ members),
+  `credentials`, `organizations`, `users`, org members, `teams` (+ members),
   `virtual_keys`, `guardrails`, `policies` — in the reconciler's fixed
   converge order;
 - costs expressed back in per-million tokens (the spec convention);

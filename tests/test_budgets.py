@@ -90,3 +90,39 @@ def test_dry_run_does_not_create(tmp_path):
 
     assert plan.create_count == 2
     assert len(fake.budgets) == 0
+
+
+def test_budget_explicit_zero_converges_and_stays_noop(tmp_path):
+    """A spec-set `max_budget: 0` converges the row and stays a NOOP: 0 and
+    0.0 compare numerically equal, so the echoed stored zero never churns
+    (issue #12 verified live: unset limits read back as None, not 0/0.0)."""
+    client, fake = make_fake_client()
+    path = tmp_path / "spec.yml"
+    path.write_text(
+        json.dumps(
+            {"budgets": [{"budget_id": "platform-budget", "budget_duration": "30d"}]}
+        )
+    )
+    reconcile(path, client, dry_run=False)
+    assert "max_budget" not in fake.budgets["platform-budget"]
+
+    # the spec now intentionally sets max_budget: 0
+    path.write_text(
+        json.dumps(
+            {
+                "budgets": [
+                    {"budget_id": "platform-budget", "max_budget": 0, "budget_duration": "30d"}
+                ]
+            }
+        )
+    )
+    plan = reconcile(path, client, dry_run=False)
+    updates = [d for d in plan.diffs if d.action is Action.UPDATE]
+    assert [d.name for d in updates] == ["platform-budget"]
+    assert updates[0].changes["max_budget"] == (0, None)
+    assert fake.budgets["platform-budget"]["max_budget"] == 0
+
+    # proxy echoes the stored zero back: converged, never churns
+    plan2 = reconcile(path, client, dry_run=False)
+    budget_diffs = [d for d in plan2.diffs if d.resource_type == "budget"]
+    assert all(d.action is Action.NOOP for d in budget_diffs), budget_diffs

@@ -237,6 +237,40 @@ def test_team_member_role_omitted_does_not_churn(ctx, tmp_path):
     assert member_diffs == [], member_diffs
 
 
+def test_team_member_role_unset_on_read_does_not_churn(ctx, tmp_path):
+    """Issue #12: a /team/info read that leaves the role unset must compare
+    against the resolved server default, not churn — while an explicit spec
+    role still fires member_update (single-direction). The pinned proxy
+    always echoes member roles (probed live), so this pins a convergence
+    guarantee for the spec-omits-role shape rather than an observed drift
+    class."""
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(json.dumps(SPEC))
+    reconcile(str(spec), client, dry_run=False)
+
+    # u2's spec role is "user" (the team default): unset on read must not
+    # read as perpetual role churn.
+    fake.team_members[("team-prod", "u2")] = None
+    plan = reconcile(str(spec), client, dry_run=False)
+    member_updates = [
+        d
+        for d in plan.diffs
+        if d.resource_type == "team_member" and d.action is Action.UPDATE
+    ]
+    assert member_updates == [], member_updates
+
+    # u1's spec role is explicit ("admin"): that must still diff.
+    fake.team_members[("team-prod", "u1")] = None
+    plan = reconcile(str(spec), client, dry_run=True)
+    updates = {
+        d.name: d
+        for d in plan.diffs
+        if d.resource_type == "team_member" and d.action is Action.UPDATE
+    }
+    assert updates["prod/u1"].changes["role"] == ("user", "admin")
+
+
 def test_member_removal_renders_deleted_and_counts_for_exit(ctx, tmp_path, capsys):
     """A member removal in dry-run renders as 'would be deleted' (not
     'would be updated ()') and delete_count counts toward the exit-2
@@ -347,6 +381,74 @@ def test_full_surface_second_run_is_noop(ctx, tmp_path):
         assert all(d.action is Action.NOOP for d in diffs), rtype
     assert plan.create_count == 0
     assert plan.update_count == 0
+
+
+def test_org_members_wait_for_users_same_run(ctx, tmp_path):
+    """Issue #12 (ordering): org members must reconcile AFTER users. The
+    pinned proxy (v1.97.0, probed live) upserts an unmanaged ghost user row
+    when /organization/member_add fires for a user that does not exist, and
+    other proxy versions may validate instead — either way the user row the
+    spec declares must be created first so memberships only ever attach to
+    rows this run owns. Under the old organizations -> members -> users
+    order the spec's user row would never be created (the ghost would
+    swallow its identity as an update) and a validating proxy would fail
+    mid-apply."""
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(
+        json.dumps(
+            {
+                "users": [
+                    {
+                        "user_id": "u3",
+                        "user_alias": "new-user",
+                        "user_role": "internal_user",
+                        "auto_create_key": "false",
+                    }
+                ],
+                "organizations": [
+                    {
+                        "organization_id": "org-1",
+                        "organization_alias": "acme",
+                        "members_with_roles": [{"user_id": "u3", "role": "org_admin"}],
+                    }
+                ],
+            }
+        )
+    )
+
+    # Track the reconciler's actual call sequence: the user row must exist
+    # BEFORE its org membership is added (the fake mirrors the proxy's
+    # member_add upsert, so this contract is what catches an ordering
+    # regression — an upsert would otherwise hide it).
+    real_create_user = client.create_user  # type: ignore[method-assign]
+    real_add_org_members = client.add_organization_members  # type: ignore[method-assign]
+    calls: list[tuple[str, str]] = []
+
+    def _tracked_create_user(payload):  # type: ignore[no-untyped-def]
+        calls.append(("create_user", payload["user_id"]))
+        return real_create_user(payload)
+
+    def _tracked_add_org_members(org_id, members):  # type: ignore[no-untyped-def]
+        calls.append(("add_organization_members", members[0]["user_id"]))
+        return real_add_org_members(org_id, members)
+
+    client.create_user = _tracked_create_user  # type: ignore[method-assign]
+    client.add_organization_members = _tracked_add_org_members  # type: ignore[method-assign]
+
+    plan = reconcile(str(spec), client, dry_run=False)
+    assert plan.create_count == 3  # user + org + member
+    assert calls == [
+        ("create_user", "u3"),
+        ("add_organization_members", "u3"),
+    ], calls
+    # the SPEC-owned row (not a member_add ghost) carries the alias
+    assert fake.users["u3"]["user_alias"] == "new-user"
+    assert fake.org_members[("org-1", "u3")] == "org_admin"
+
+    # second run converges to no-ops
+    plan2 = reconcile(str(spec), client, dry_run=False)
+    assert plan2.create_count == 0 and plan2.update_count == 0
 
 
 def test_models_are_reconciled_before_credentials_with_model_id(ctx, tmp_path):
@@ -828,6 +930,11 @@ def test_alias_only_org_stale_listing_still_reconciles_members(ctx, tmp_path):
     org listing, the members must still be created via the create response's
     organization_id — never silently skipped."""
     client, fake = ctx
+    # Adoption flow: u1 exists on the proxy before litellm-as-code takes
+    # over. Seeding keeps this test about the stale-listing recovery itself;
+    # the fake mirrors the pinned proxy's member_add upsert for same-run
+    # users (issue #12).
+    fake.users["u1"] = {"user_id": "u1", "user_alias": "admin", "user_role": "internal_user"}
     spec = tmp_path / "spec.yml"
     spec.write_text(
         json.dumps(

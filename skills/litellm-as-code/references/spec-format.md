@@ -15,11 +15,13 @@ The spec is a single YAML file (default `spec.yml`, override with
 
 ## Top-level sections (reconcile order)
 
-`budgets` → `models` → `credentials` → `organizations` (+ members) → `users` →
-`teams` (+ members) → `virtual_keys` → `guardrails` → `policies`.
+`budgets` → `models` → `credentials` → `organizations` → `users` → org
+members → `teams` (+ members) → `virtual_keys` → `guardrails` → `policies`.
 
 Models come before credentials because a credential's `model_id` must reference
-an existing model.
+an existing model. Org members come after users because the proxy validates
+user existence on `/organization/member_add` — a spec that creates a user and
+joins them to an organization in the same run converges in one pass.
 
 ## Per-resource shapes
 
