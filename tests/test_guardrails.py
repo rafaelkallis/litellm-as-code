@@ -302,6 +302,49 @@ def test_nested_secret_is_not_drift_and_is_protected(tmp_path):
     }
 
 
+def test_list_nested_secret_is_protected(tmp_path):
+    """scrub_value also strips secrets from LIST elements, so the
+    replacement-safety walk must traverse lists too (Copilot r10, PR #20):
+    an exported `rules: [{Authorization: token}]` becomes `rules: [{}]`, and
+    a benign co-change must not PATCH that token away."""
+    client, fake = make_fake_client()
+    spec = _write_spec(tmp_path, SPEC)
+    reconcile(spec, client, dry_run=False)
+    fake.guardrails["pii-guard"]["guardrail_info"] = {
+        "description": "PII masking",
+        "rules": [{"Note": "n", "Authorization": "Bearer live-token-1"}],
+    }
+
+    # exported shape: rule element scrubbed -> rules: [{}]; no churn
+    changed = json.loads(spec.read_text())
+    changed["guardrails"][0]["guardrail_info"]["rules"] = [{"Note": "n"}]
+    spec.write_text(json.dumps(changed))
+    plan = reconcile(spec, client, dry_run=True)
+    guardrail_diffs = [d for d in plan.diffs if d.resource_type == "guardrail"]
+    assert all(d.action is Action.NOOP for d in guardrail_diffs), guardrail_diffs
+
+    # a benign co-change would replace the map and delete the token: refuse
+    changed["guardrails"][0]["guardrail_info"]["description"] = "Updated"
+    spec.write_text(json.dumps(changed))
+    with pytest.raises(ReconcilerError):
+        reconcile(spec, client, dry_run=False)
+    assert fake.guardrails["pii-guard"]["guardrail_info"]["rules"][0][
+        "Authorization"
+    ] == "Bearer live-token-1"
+
+    # re-declaring the token (plaintext) at its index unblocks the update
+    changed = json.loads(spec.read_text())
+    changed["guardrails"][0]["guardrail_info"] = {
+        "description": "Updated",
+        "rules": [{"Note": "n", "Authorization": "Bearer fresh-token"}],
+    }
+    spec.write_text(json.dumps(changed))
+    reconcile(spec, client, dry_run=False)
+    assert fake.guardrails["pii-guard"]["guardrail_info"]["rules"][0][
+        "Authorization"
+    ] == "Bearer fresh-token"
+
+
 def test_litellm_params_reasserted_on_patch(tmp_path):
     """When a comparable change fires a PATCH, litellm_params is re-asserted
     (like credential_values): the update payload carries the full params and

@@ -104,11 +104,12 @@ def _guardrail_info_changes(want: Any, have: Any) -> dict[str, tuple[Any, Any]]:
 
 
 def _secret_paths(value: Any, prefix: str = "") -> list[str]:
-    """Dotted paths of secret-shaped entries inside a mapping (Copilot r9).
+    """Dotted paths of secret-shaped entries inside any container (r9+r10).
 
     Sensitive-keyed non-None entries and masker-shaped values anywhere in
-    the tree (e.g. guardrail_info.headers.Authorization) — the write-once
-    material a replacement-PATCH payload could erase.
+    the tree — lists included (e.g. guardrail_info.headers.Authorization or
+    rules[0].Authorization) — the write-once material a replacement-PATCH
+    payload could erase.
     """
     paths: list[str] = []
     if isinstance(value, dict):
@@ -116,47 +117,72 @@ def _secret_paths(value: Any, prefix: str = "") -> list[str]:
             path = f"{prefix}.{k}" if prefix else k
             if is_secret_entry(k, v):
                 paths.append(path)
-            elif isinstance(v, dict):
+            elif isinstance(v, (dict, list)):
                 paths.extend(_secret_paths(v, path))
+    elif isinstance(value, list):
+        for i, item in enumerate(value):
+            if isinstance(item, (dict, list)):
+                paths.extend(_secret_paths(item, f"{prefix}[{i}]"))
+            elif is_masked_value(item):
+                paths.append(f"{prefix}[{i}]")
     return paths
 
 
 def _dropped_secret_paths(
     want: Any,
-    have: dict[str, Any],
+    have: dict[str, Any] | list[Any],
     prefix: str = "",
 ) -> list[str]:
     """Nested secret entries an update payload's `guardrail_info` would
-    delete, dotted-path keyed.
+    delete, dotted-path keyed (dicts AND list elements — Copilot r10).
 
     The proxy replaces the whole nested map on PATCH, so any live secret
     entry (sensitive key name or masker-shaped value — see secrets.py) that
-    the spec's map does not re-declare with usable material (non-null,
-    non-masked) would be silently destroyed, and its plaintext cannot be
-    read back for re-assertion (issue #11, PR #20 Copilot r2 + r9). Such
-    paths block the update.
+    the spec does not re-declare with usable material (non-null, non-masked)
+    would be silently destroyed, and its plaintext cannot be read back for
+    re-assertion (issue #11, PR #20 Copilot r2 + r9). Such paths block the
+    update.
     """
     out: list[str] = []
-    for k, v in have.items():
-        path = f"{prefix}.{k}" if prefix else k
-        w = want.get(k) if isinstance(want, dict) else None
-        if is_secret_entry(k, v) and not _usable_reassertion(want, k, w):
-            # A null or masker-shaped spec value is not a usable
-            # re-assertion either: it would write "no secret" (or the mask)
-            # over the live write-once value.
+    if isinstance(have, dict):
+        items: list[tuple[Any, Any]] = list(have.items())
+    else:  # list elements: match by index
+        items = list(enumerate(have))
+    for k, v in items:
+        path = (
+            f"{prefix}.{k}" if isinstance(have, dict) and prefix else (
+                str(k) if isinstance(have, dict) else f"{prefix}[{k}]"
+            )
+        )
+        w = _declared(want, k)
+        if is_secret_entry(str(k), v) and not _usable_reassertion(w):
+            # the spec is absent/null/masked here — a null or masker-shaped
+            # spec value is not a usable re-assertion either: it would write
+            # "no secret" (or the mask) over the live write-once value
             out.append(path)
-        elif isinstance(v, dict):
-            if isinstance(w, dict):
+        elif isinstance(v, (dict, list)):
+            if isinstance(w, type(v)):
                 out.extend(_dropped_secret_paths(w, v, path))
-            else:  # the spec declares nothing (or non-dict) here: the whole
-                # secret-bearing subtree goes away with the replacement
+            else:  # the spec declares nothing (or a different container)
+                # here: the whole risky subtree goes with the replacement
                 out.extend(_secret_paths(v, path))
     return out
 
 
-def _usable_reassertion(want: dict[str, Any], key: str, value: Any) -> bool:
-    """True when `value` is usable desired state for a live secret node."""
-    return key in want and value is not None and not is_masked_value(value)
+def _declared(want: Any, key: Any) -> Any:
+    """The spec's declared value at `key` (mapping key or list index)."""
+    if isinstance(want, dict):
+        return want.get(key)
+    if isinstance(want, list) and isinstance(key, int) and key < len(want):
+        return want[key]
+    return None
+
+
+def _usable_reassertion(declared: Any) -> bool:
+    """True when the spec's declared value is usable desired state for a
+    live secret node: present, non-null and not a masker echo (null/masked
+    would write "no secret" / the mask over the write-once value)."""
+    return declared is not None and not is_masked_value(declared)
 
 
 def _dropped_secret_keys(entry: Any, existing: dict[str, Any]) -> list[str]:
