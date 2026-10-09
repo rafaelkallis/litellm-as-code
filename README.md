@@ -218,7 +218,8 @@ options:
 
 Export mode (read-only):
   litellm-as-code export [OUT] [--base-url URL] [--api-key KEY] [--quiet]
-  OUT                    path to write the exported spec (default spec.yml)
+  OUT                    path to write the exported spec (env: LITELLM_SPEC,
+                         default spec.yml)
 ```
 
 Every invocation prints a short **author & license notice** to stderr before
