@@ -357,7 +357,11 @@ class FakeLiteLLM:
 
     def _create_policy(self, payload):  # type: ignore[no-untyped-def]
         name = payload["policy_name"]
-        pid = f"pol-{len(self.policy_ids)}"
+        # Mint an id that is not live: after a recreate (delete + re-create,
+        # issue #10) a len()-derived id would collide with a surviving
+        # policy's id, making later PUT/delete calls target the wrong row.
+        seqs = [int(pid.rsplit("-", 1)[-1]) for pid in self.policy_ids.values()]
+        pid = f"pol-{max(seqs, default=-1) + 1}"
         self.policies[name] = dict(payload)
         self.policy_ids[name] = pid
         return {"policy_id": pid, "policy_name": name}

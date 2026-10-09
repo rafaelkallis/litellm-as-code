@@ -175,7 +175,7 @@ def test_draft_policy_drift_updates_in_place(tmp_path):
 def test_failing_recreate_after_delete_surfaces_and_destroys(tmp_path):
     """A publish-locked policy whose PUT is rejected is deleted and re-created;
     if the re-create then fails, the exception must surface loudly (not be
-    swallowed) and the destroyed state must be visible (.accepted residual
+    swallowed) and the destroyed state must be visible (the accepted residual
     non-atomicity, documented in resources/policies.py — issue #10)."""
     client, fake = make_fake_client()
     spec = _write_spec(tmp_path, SPEC)
@@ -226,3 +226,38 @@ def test_dry_run_drift_reports_both_paths(tmp_path):
         "update (draft PUT) or recreate (production)"
     )
     assert len(fake.policies) == 2  # nothing mutated
+
+
+def test_recreated_policy_id_never_collides_with_survivors(tmp_path):
+    """After a production recreate, the minted policy_id must not collide with
+    a surviving policy's id (a len()-derived id would hand both rows the same
+    id, making later PUT/delete calls target the wrong policy — Copilot review
+    on PR #19). Drifting the recreated policy again while it is a draft must
+    update THAT policy in place, not the survivor."""
+    client, fake = make_fake_client()
+    spec = _write_spec(tmp_path, SPEC)
+    reconcile(spec, client, dry_run=False)
+
+    # recreate global-baseline (production drift) while strict-safety survives
+    changed = json.loads(spec.read_text())
+    changed["policies"][0]["description"] = "recreated baseline"
+    spec.write_text(json.dumps(changed))
+    reconcile(spec, client, dry_run=False)
+
+    ids = set(fake.policy_ids.values())
+    assert len(ids) == 2, f"policy ids must be unique: {fake.policy_ids}"
+    assert fake.policy_ids["global-baseline"] != fake.policy_ids["strict-safety"]
+    recreated_pid = fake.policy_ids["global-baseline"]
+
+    # the recreated version is now a draft on the proxy; drift it again and
+    # the PUT must land on the recreated row, never the untouched survivor
+    fake.policy_drafts.add("global-baseline")
+    changed = json.loads(spec.read_text())
+    changed["policies"][0]["description"] = "draft re-edit"
+    spec.write_text(json.dumps(changed))
+    plan = reconcile(spec, client, dry_run=False)
+    updates = {d.name: d for d in plan.diffs if d.action is Action.UPDATE}
+    assert updates["global-baseline"].message == "updated in place (draft PUT)"
+    assert fake.policies["global-baseline"]["description"] == "draft re-edit"
+    assert fake.policies["strict-safety"]["description"] == "Extra safety"
+    assert fake.policy_ids["global-baseline"] == recreated_pid
