@@ -35,6 +35,15 @@ def comparable_diff(
     Only fields listed in `fields` are compared; missing live fields are
     treated as None (which flags a diff if desired has a value). Empty-list
     fields are considered equal to an omitted (None) counterpart.
+
+    Deliberately no scalar-default tolerance (issue #12): on the pinned proxy
+    (v1.97.0, probed live) unset budget-table limits (max_budget, soft_budget,
+    tpm_limit, rpm_limit), unset team `max_budget` and unset key `max_budget`
+    all read back as `None` — not `0`/`0.0` — so the empty-
+    collection tolerance of `equiv` is already sufficient. A `None == 0`
+    tolerance without a version that actually echoes it would only reduce
+    diff sensitivity (AGENTS.md §9: normalize against a verified live echo
+    class, not a suspicion).
     """
     changes: dict[str, tuple[Any, Any]] = {}
     for f in fields:

@@ -401,8 +401,9 @@ def validate_spec(
     }
 
     for section, (entries, model) in sections.items():
-        if entries is None:
-            continue
+        # `data.get(section, [])` above already normalizes an omitted or
+        # explicit-null section to [] — the isinstance guard is only reached
+        # for a truthy, non-list section value.
         if not isinstance(entries, list):
             errors.append(f"spec.{section}: expected a list, got {type(entries).__name__}")
             continue

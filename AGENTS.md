@@ -32,11 +32,16 @@ proxy's startup `config.yaml`.
 spec.yml  --diff-->  live API  --apply-->  converge
 ```
 
-Ordering is fixed: `budgets -> models -> credentials -> organizations (+
-members) -> users -> teams (+ members) -> keys -> guardrails -> policies`.
+Ordering is fixed: `budgets -> models -> credentials -> organizations ->
+users -> org members -> teams (+ members) -> keys -> guardrails -> policies`.
 Acyclic & single-target; do not add a graph solver. Models come before
 credentials because a credential's `model_id` must reference an existing
-model (POST /credentials 404s otherwise).
+model (POST /credentials 404s otherwise). Org members come after users
+because memberships must attach to user rows the run owns: on the pinned
+proxy (v1.97.0, probed live) `/organization/member_add` even UPSERTS an
+unmanaged ghost user row for an unknown user, so users-first keeps the
+spec-declared row authoritative and convergence version-independent (issue
+#12).
 
 Identity is **fully API-derived** — there is no local applied-state file:
 - key existence: `key_alias` (uniqueness enforced by the proxy) from `/key/list`;

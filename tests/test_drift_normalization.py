@@ -7,6 +7,10 @@ a real LiteLLM deployment:
   rows, so a spec that sets them must not read as perpetual drift.
 - LiteLLM always echoes list-shaped fields as (possibly empty) arrays; an
   omitted spec field (None) must compare equal to an empty list.
+- Issue #12 (verified live against the pinned proxy, v1.97.0): unset scalar
+  limits read back as EXPLICIT null, not `0`/`0.0` — so a scalar server-
+  default tolerance was deliberately NOT added; `equiv`'s None-vs-value
+  tolerance already converges those rows.
 """
 
 from __future__ import annotations
@@ -66,3 +70,25 @@ def test_equiv_preserves_type_sensitive_comparison_for_scalars():
     assert comparable_diff({"user_role": "proxy_admin"}, {"user_role": "internal_user"}, ["user_role"])
     # None vs None no diff
     assert comparable_diff({"user_role": None}, {"user_role": None}, ["user_role"]) == {}
+
+
+def test_comparable_diff_no_scalar_default_tolerance_without_live_echo():
+    """Issue #12 (verified live, v1.97.0): unset budget-limit/team-budget
+    fields read back as explicit null, NOT as `0`/`0.0` scalar defaults —
+    the reconciler must therefore not add a tolerance for an echo class no
+    pinned-version row exhibits (fewer normalizations = more diff
+    sensitivity). The pairs below stay plain diffs, and a converged row
+    never visits them at all (None ≡ None)."""
+    # omitted spec field vs live scalar default echo would still diff
+    assert comparable_diff({}, {"max_budget": 0.0}, ["max_budget"]) == {
+        "max_budget": (None, 0.0)
+    }
+    # because the pinned proxy echoes null instead, these are the pairs a
+    # real deployment actually produces — both covered by equiv
+    assert comparable_diff({}, {"max_budget": None}, ["max_budget"]) == {}
+    assert comparable_diff({"max_budget": None}, {"max_budget": None}, ["max_budget"]) == {}
+    # an intentionally spec-set zero is NOT tolerated away, echo or not
+    assert comparable_diff({"max_budget": 0}, {}, ["max_budget"]) == {
+        "max_budget": (0, None)
+    }
+    assert comparable_diff({"max_budget": 0}, {"max_budget": 0.0}, ["max_budget"]) == {}

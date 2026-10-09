@@ -43,12 +43,18 @@ def reconcile(
     """Run the convergence loop: spec diff -> apply (unless dry-run).
 
     Ordering is fixed: budgets -> models -> credentials -> organizations ->
-    org members -> users -> teams -> team members -> keys -> guardrails ->
+    users -> org members -> teams -> team members -> keys -> guardrails ->
     policies. Models must come before credentials: a credential can bind a
     model via `model_id`, and POST /credentials rejects an unknown model with
     a 404. Models/credentials come before organizations because LiteLLM
     requires at least one model to be configured before it lets you create an
-    organization on a fresh proxy. Acyclic & single-target.
+    organization on a fresh proxy. Org members come after users because
+    memberships must attach to user rows this run owns: on the pinned proxy
+    (v1.97.0, probed live) /organization/member_add even UPSERTS an unmanaged
+    ghost user row for an unknown user, while other versions may validate —
+    users-first keeps the spec-declared row authoritative in both cases (the
+    same reasoning already applies to team members, which run after users).
+    Acyclic & single-target.
     """
     spec = load_spec(spec_path)
     plan = Plan()
@@ -70,10 +76,17 @@ def reconcile(
         client, spec.get("organizations", []), dry_run=dry_run
     )
     extend(org_diffs)
-    extend(reconcile_org_members(client, org_specs, dry_run=dry_run))
 
     banner("Users")
     extend(reconcile_users(client, spec.get("users", []), dry_run=dry_run))
+
+    # Org members after users (issue #12): memberships must attach to user
+    # rows this run owns. On the pinned proxy (v1.97.0, probed)
+    # /organization/member_add upserts an unmanaged ghost user row for an
+    # unknown user; rows created by the `users` step are the spec's own, so
+    # members must always attach to those.
+    banner("Organization members")
+    extend(reconcile_org_members(client, org_specs, dry_run=dry_run))
 
     banner("Teams")
     team_diffs, team_specs = reconcile_teams(

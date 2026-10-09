@@ -188,7 +188,18 @@ def reconcile_team_members(
         want_by_id = {
             m["user_id"]: m.get("role") or DEFAULT_TEAM_ROLE for m in want
         }
-        live_by_id = {m["user_id"]: m.get("role") for m in live_members if "user_id" in m}
+        # The spec side may omit the role (issue #7): the shared server
+        # default is resolved inline at BOTH comparison sides so an unset
+        # value can never churn (issue #12). The pinned proxy (v1.97.0,
+        # probed) always echoes member roles — making the live side symmetric
+        # to the want side is a convergence guarantee, not an observed drift
+        # class. Single-direction: an explicit spec role still diffs and
+        # fires member_update.
+        live_by_id = {
+            m["user_id"]: m.get("role") or DEFAULT_TEAM_ROLE
+            for m in live_members
+            if "user_id" in m
+        }
 
         for uid, role in want_by_id.items():
             if uid not in live_by_id:
