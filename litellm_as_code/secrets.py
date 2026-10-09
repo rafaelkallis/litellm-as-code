@@ -18,6 +18,7 @@ mis-read a nested secret (Copilot r9, PR #20).
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # Key-name keywords the API masks. Mirrors LiteLLM v1.97.0's sensitive-key
@@ -46,15 +47,21 @@ def is_sensitive_key(key: str) -> bool:
 # shape; re-declaring the plaintext simply replaces it.
 MASK_PLACEHOLDER = "<masked>"
 
+# Masker output shapes (LiteLLM v1.97.0 `_get_masked_values`), matched
+# WHOLE-VALUE so legitimate content containing "***" (e.g. a Markdown
+# "use *** emphasis *** here") is not torn out (Copilot r14 on PR #20):
+#   - legacy/simple:  value ending in a 3+ asterisk run ("abcd***")
+#   - short values:   nothing but asterisks ("*****"), 3+ of them
+#   - prefix/suffix:  exactly 2 kept characters, asterisk run between
+#                     them ("ab****cd")
+_MASK_SHAPES = re.compile(r"^(?:.*\*{3,}|\*{3,}|.{2}\*{3,}.{2})$")
+
 
 def is_masked_value(value: Any) -> bool:
-    # LiteLLM's masker keeps a short prefix/suffix and produces an interior
-    # asterisk run ("ab****cd"), or "*****" for short values — so the shape
-    # is ANY run of >= 3 asterisks, not a trailing one. A lone embedded "*"
-    # in a glob/pattern value ("openai/*", "gpt-4*") is a legitimate
-    # configuration value, not a masked secret — exporting it is required
-    # for re-apply to reproduce the row (issue #11).
-    return isinstance(value, str) and "***" in value
+    # A lone embedded "*" in a glob/pattern value ("openai/*", "gpt-4*")
+    # is a legitimate configuration value, not a masked secret — exporting
+    # it is required for re-apply to reproduce the row (issue #11).
+    return isinstance(value, str) and bool(_MASK_SHAPES.match(value))
 
 
 def is_secret_entry(key: str, value: Any) -> bool:

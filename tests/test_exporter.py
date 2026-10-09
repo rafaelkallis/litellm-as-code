@@ -236,18 +236,27 @@ def test_export_masked_value_wildcard_keeps_glob_values(converged, capsys):
         # mask-shape value heuristic itself, not the keyword rule
         # (Copilot r1 on PR #20; issue #11)
         "custom_label": "abcd***",
+        # legitimate interior asterisk content that is NOT the masker's
+        # shape (2+2 kept chars) must survive the export (Copilot r14)
+        "markdown_note": "use *** emphasis *** here",
+        # the masker's exact prefix/suffix shape: still stripped
+        "casing": "ab****cd",
     }
     exported = build_spec(client)
     g = next(x for x in exported["guardrails"] if x["guardrail_name"] == "pii-guard")
     assert g["litellm_params"]["model_pattern"] == "openai/*"
     assert g["litellm_params"]["name_prefix"] == "gpt-4*"
+    assert g["litellm_params"]["markdown_note"] == "use *** emphasis *** here"
     assert "custom_label" not in g["litellm_params"]
+    assert "casing" not in g["litellm_params"]
 
     err = capsys.readouterr().err
     assert "masked litellm_params value(s)" in err
     assert "'custom_label'" in err
+    assert "'casing'" in err
     assert "model_pattern" not in err
     assert "name_prefix" not in err
+    assert "markdown_note" not in err
 
 
 def test_export_guardrail_info_masked_values_are_stripped(converged, capsys):
@@ -288,7 +297,10 @@ def test_export_nested_headers_secret_stripped(converged, capsys):
     fake.guardrails["pii-guard"]["litellm_params"] = {
         "guardrail": "presidio",
         "headers": {"X-Foo": "bar", "Authorization": "Bearer live-token-1"},
-        "note_list": ["benign", "abcd****xyz"],  # list: mask by value
+        # list element in the masker's exact shape: 2-char prefix/suffix
+        # kept around the asterisk run (Copilot r14: anything else — e.g.
+        # Markdown "*** emphasis ***" — must survive the export)
+        "note_list": ["benign", "ab****cd"],
     }
     exported = build_spec(client)
     g = next(x for x in exported["guardrails"] if x["guardrail_name"] == "pii-guard")

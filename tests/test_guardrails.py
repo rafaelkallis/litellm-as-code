@@ -465,6 +465,39 @@ def test_nondict_guardrail_info_secret_scrubbed_in_plan(tmp_path):
     assert "Authorization" not in updates[0].changes  # scrubbed, not leaked
 
 
+def test_nondict_guardrail_info_empty_equiv_and_secret_scrub(tmp_path):
+    """Regression (Copilot r13 + r14, PR #20): the non-dict guardrail_info
+    fallback must keep diff.equiv's empty-collection tolerance (desired {}
+    vs live None; the proxy normalizes empty maps back to None — otherwise
+    perpetual drift) AND scrub both sides so desired secrets never render
+    into plan output."""
+    client, fake = make_fake_client()
+    spec = _write_spec(tmp_path, SPEC)
+    reconcile(spec, client, dry_run=False)
+    # the proxy normalized the empty map back to None after our own apply
+    fake.guardrails["pii-guard"]["guardrail_info"] = None
+
+    changed = json.loads(spec.read_text())
+    changed["guardrails"][0]["guardrail_info"] = {}
+    spec.write_text(json.dumps(changed))
+
+    plan = reconcile(spec, client, dry_run=True)
+    guardrail_diffs = [d for d in plan.diffs if d.resource_type == "guardrail"]
+    assert all(d.action is Action.NOOP for d in guardrail_diffs), guardrail_diffs
+
+    # ...but a desired secret-bearing map vs None is still drift, scrubbed
+    changed["guardrails"][0]["guardrail_info"] = {
+        "description": "PII masking",
+        "Authorization": "Bearer plaintext-do-not-log",
+    }
+    spec.write_text(json.dumps(changed))
+    plan2 = reconcile(spec, client, dry_run=True)
+    updates = [d for d in plan2.diffs if d.action is Action.UPDATE]
+    assert updates
+    assert "Bearer plaintext-do-not-log" not in str(updates)
+    assert "Authorization" not in updates[0].changes  # scrubbed, not leaked
+
+
 def test_litellm_params_reasserted_on_patch(tmp_path):
     """When a comparable change fires a PATCH, litellm_params is re-asserted
     (like credential_values): the update payload carries the full params and

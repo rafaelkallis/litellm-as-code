@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 
-def _equiv(a: Any, b: Any) -> bool:
+def equiv(a: Any, b: Any) -> bool:
     """Field equivalence: exact equality plus empty-collection tolerance.
 
     LiteLLM always echoes collection-shaped fields as (possibly empty)
@@ -40,6 +40,6 @@ def comparable_diff(
     for f in fields:
         want = desired.get(f)
         have = live.get(f)
-        if not _equiv(want, have):
+        if not equiv(want, have):
             changes[f] = (want, have)
     return changes

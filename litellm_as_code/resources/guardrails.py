@@ -32,7 +32,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..api import LiteLLMClient
-from ..diff import comparable_diff
+from ..diff import comparable_diff, equiv
 from ..secrets import (
     MASK_PLACEHOLDER,
     is_masked_value,
@@ -112,12 +112,15 @@ def _guardrail_info_changes(want: Any, have: Any) -> dict[str, tuple[Any, Any]]:
     # not a dict on the live side: comparable_diff semantics (exact value),
     # but with BOTH sides scrubbed first — a desired dict can still carry
     # write-once material, and the raw tuple would render it into plan
-    # output (Copilot r13 on PR #20)
+    # output (Copilot r13 on PR #20). Preserve `equiv`'s empty-collection
+    # tolerance (see diff.py) so e.g. desired {} vs live None stays a NOOP:
+    # the proxy normalizes empty maps back to None, which must not read as
+    # perpetual drift (Copilot r14 on PR #20).
     w_clean, _ = scrub_value(want)
     h_clean, _ = scrub_value(have)
-    if w_clean == h_clean:
-        return {}
-    return {"guardrail_info": (w_clean, h_clean)}
+    if not equiv(w_clean, h_clean):
+        return {"guardrail_info": (w_clean, h_clean)}
+    return {}
 
 
 def _secret_paths(value: Any, prefix: str = "") -> list[str]:
