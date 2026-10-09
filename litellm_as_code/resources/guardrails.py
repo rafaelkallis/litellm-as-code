@@ -189,6 +189,15 @@ def reconcile_guardrails(
         # Re-assert litellm_params (secrets + non-secret config) since it
         # cannot be diffed against the masked read-back.
         payload.pop("guardrail_id", None)
+        if "guardrail_info" not in payload and any(
+            k.startswith("guardrail_info") for k in changes
+        ):
+            # The spec omits guardrail_info but drift was detected in the
+            # live map (e.g. benign entries it no longer declares): omitting
+            # the field from the PATCH would leave the live map uncleaned and
+            # re-drift forever. Materialize the desired (empty) map (Copilot
+            # r5 on PR #20).
+            payload["guardrail_info"] = {}
         client.update_guardrail(guardrail_id, payload)
 
     return diffs

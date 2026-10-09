@@ -202,6 +202,28 @@ def test_guardrail_info_null_entry_membership_is_drift(tmp_path):
     assert "notes" not in fake.guardrails["pii-guard"]["guardrail_info"]
 
 
+def test_spec_without_guardrail_info_clears_live_map(tmp_path):
+    """Regression (Copilot r5, PR #20): a spec that omits guardrail_info
+    drift-detects live benign entries (removals), so the PATCH must carry
+    the materialized empty map — omitting the field would leave the live
+    map uncleaned and re-drift forever."""
+    client, fake = make_fake_client()
+    spec = _write_spec(tmp_path, SPEC)
+    reconcile(spec, client, dry_run=False)
+
+    changed = json.loads(spec.read_text())
+    del changed["guardrails"][0]["guardrail_info"]
+    spec.write_text(json.dumps(changed))
+
+    reconcile(spec, client, dry_run=False)
+    assert fake.guardrails["pii-guard"]["guardrail_info"] == {}
+
+    # converged: no more drift
+    plan = reconcile(spec, client, dry_run=False)
+    guardrail_diffs = [d for d in plan.diffs if d.resource_type == "guardrail"]
+    assert all(d.action is Action.NOOP for d in guardrail_diffs), guardrail_diffs
+
+
 def test_litellm_params_reasserted_on_patch(tmp_path):
     """When a comparable change fires a PATCH, litellm_params is re-asserted
     (like credential_values): the update payload carries the full params and
