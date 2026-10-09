@@ -221,6 +221,139 @@ def test_export_guardrail_masked_params_are_stripped(converged, tmp_path):
     assert "vertex_credentials" not in g["litellm_params"]
 
 
+def test_export_masked_value_wildcard_keeps_glob_values(converged, capsys):
+    """The masked-value heuristic matches the LiteLLM masker's output shape
+    (an interior run of 3+ asterisks — `_get_masked_values` keeps a short
+    prefix/suffix). A lone embedded '*' in a glob/pattern value is a
+    legitimate configuration value and must survive the export WITHOUT a
+    masked-value warn (issue #11)."""
+    client, fake = converged
+    fake.guardrails["pii-guard"]["litellm_params"] = {
+        "guardrail": "presidio",
+        "model_pattern": "openai/*",
+        "name_prefix": "gpt-4*",
+        # a key WITHOUT any sensitive keyword, so this exercises the
+        # mask-shape value heuristic itself, not the keyword rule
+        # (Copilot r1 on PR #20; issue #11)
+        "custom_label": "abcd***",
+        # legitimate interior asterisk content that is NOT the masker's
+        # shape (2+2 kept chars) must survive the export (Copilot r14)
+        "markdown_note": "use *** emphasis *** here",
+        # the masker's exact prefix/suffix shape: still stripped
+        "casing": "ab****cd",
+    }
+    exported = build_spec(client)
+    g = next(x for x in exported["guardrails"] if x["guardrail_name"] == "pii-guard")
+    assert g["litellm_params"]["model_pattern"] == "openai/*"
+    assert g["litellm_params"]["name_prefix"] == "gpt-4*"
+    assert g["litellm_params"]["markdown_note"] == "use *** emphasis *** here"
+    assert "custom_label" not in g["litellm_params"]
+    assert "casing" not in g["litellm_params"]
+
+    err = capsys.readouterr().err
+    assert "masked litellm_params value(s)" in err
+    assert "'custom_label'" in err
+    assert "'casing'" in err
+    assert "model_pattern" not in err
+    assert "name_prefix" not in err
+    assert "markdown_note" not in err
+
+
+def test_export_guardrail_info_masked_values_are_stripped(converged, capsys):
+    """guardrail_info is a comparable field exported verbatim, so a masked
+    credential echoed there must be stripped (with a WARN), exactly like
+    litellm_params — otherwise it lands in the spec in the clear and the
+    reconciler diffs a masked string as desired state (issue #11)."""
+    client, fake = converged
+    fake.guardrails["pii-guard"]["guardrail_info"] = {
+        "description": "PII masking",
+        "api_key": "abcd***",
+        # LiteLLM v1.97.0 also masks `authorization` (Copilot r8, PR #20):
+        # this stays PLAINTEXT in a verbatim-echoed guardrail_info, and must
+        # be caught by the keyword rule, not the value heuristic
+        "Authorization": "Bearer live-token-1",
+        # an interior mask run (prefix/suffix kept): value-shape rule
+        "custom_label": "ab****cd",
+    }
+    exported = build_spec(client)
+    g = next(x for x in exported["guardrails"] if x["guardrail_name"] == "pii-guard")
+    assert g["guardrail_info"] == {"description": "PII masking"}
+
+    # benign values must still survive; the masked keys are named in the WARN
+    err = capsys.readouterr().err
+    assert "masked guardrail_info value(s)" in err
+    assert "'api_key'" in err
+    assert "'Authorization'" in err
+    assert "'custom_label'" in err
+    assert "description" not in err
+
+
+def test_export_nested_headers_secret_stripped(converged, capsys):
+    """Secrets hide NESTED inside benign containers, e.g. the supported
+    `litellm_params.headers.Authorization` shape (Copilot r9, PR #20): the
+    recursive scrub must project the nesting, strip the bearer token, keep
+    the benign sibling entries, and name the dotted path in the WARN."""
+    client, fake = converged
+    fake.guardrails["pii-guard"]["litellm_params"] = {
+        "guardrail": "presidio",
+        "headers": {"X-Foo": "bar", "Authorization": "Bearer live-token-1"},
+        # list element in the masker's exact shape: 2-char prefix/suffix
+        # kept around the asterisk run (Copilot r14: anything else — e.g.
+        # Markdown "*** emphasis ***" — must survive the export)
+        "note_list": ["benign", "ab****cd"],
+    }
+    exported = build_spec(client)
+    g = next(x for x in exported["guardrails"] if x["guardrail_name"] == "pii-guard")
+    assert g["litellm_params"]["headers"] == {"X-Foo": "bar"}
+    # scrubbed list elements keep an index placeholder so later elements
+    # stay aligned with the live vector (Copilot r11, PR #20)
+    assert g["litellm_params"]["note_list"] == ["benign", "<masked>"]
+
+    err = capsys.readouterr().err
+    assert "masked litellm_params value(s)" in err
+    assert "'headers.Authorization'" in err
+    assert "'note_list[1]'" in err
+    assert "X-Foo" not in err
+
+
+def test_export_guardrail_info_benign_survives(converged):
+    """A guardrail_info without masked values exports verbatim (unchanged
+    behavior — the strip is belt-and-braces, not destructive)."""
+    client, fake = converged
+    info = fake.guardrails["pii-guard"].get("guardrail_info")
+    assert info is not None  # harness ships one
+    exported = build_spec(client)
+    g = next(x for x in exported["guardrails"] if x["guardrail_name"] == "pii-guard")
+    assert g["guardrail_info"] == info
+
+
+def test_export_reapply_masked_guardrail_info_converges(converged, tmp_path):
+    """End-to-end: a live guardrail_info holding a masked entry is exported
+    with the entry stripped; re-applying that export must CONVERGE (no
+    perpetual guardrail PATCH) — the reconciler skips the secret subset of
+    guardrail_info exactly like the exporter does (issue #11, Copilot r1 on
+    PR #20)."""
+    client, fake = converged
+    fake.guardrails["pii-guard"]["guardrail_info"] = {
+        "description": "PII masking",
+        "api_key": "abcd***",
+    }
+
+    out = tmp_path / "export.yml"
+    exported = export_spec(client, out)
+    eg = next(x for x in exported["guardrails"] if x["guardrail_name"] == "pii-guard")
+    assert "api_key" not in eg["guardrail_info"]
+
+    plan = reconcile(str(out), client, dry_run=False)
+    g_diffs = [d for d in plan.diffs if d.resource_type == "guardrail"]
+    assert not any(d.action is Action.UPDATE for d in g_diffs), g_diffs
+
+    # and it stays converged
+    plan2 = reconcile(str(out), client, dry_run=False)
+    g_diffs2 = [d for d in plan2.diffs if d.resource_type == "guardrail"]
+    assert all(d.action is Action.NOOP for d in g_diffs2), g_diffs2
+
+
 def test_export_team_info_failure_aborts(converged, tmp_path):
     """If a team's memberships can't be read, the export must FAIL rather than
     emit an empty members list (which re-apply would treat as delete-all)."""

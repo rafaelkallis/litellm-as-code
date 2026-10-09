@@ -40,6 +40,7 @@ import yaml
 
 from .api import LiteLLMClient
 from .log import warn
+from .secrets import split_masked
 from .spec import load_spec
 
 # Sections in reconcile order; the exporter emits exactly these, omitting any
@@ -354,22 +355,11 @@ def _export_keys(client: LiteLLMClient) -> list[dict[str, Any]]:
 
 _GUARDRAIL_KEYS = ["guardrail_name", "litellm_params", "guardrail_info"]
 
-# `litellm_params` may carry write-once secrets (api_key, headers, ...) that
-# the API masks on read (`_get_masked_values`). Mirror the API's sensitive-key
-# keywords so we strip masked values instead of persisting them as desired
-# state (they'd be sent on re-apply and yield a nonfunctional guardrail).
-_GUARDRAIL_SENSITIVE_KEYWORDS = (
-    "token",
-    "key",
-    "secret",
-    "credential",
-    "password",
-    "passwd",
-)
-
-
-def _is_sensitive_value(value: Any) -> bool:
-    return isinstance(value, str) and "*" in value
+# `litellm_params` may carry write-once secrets (api_key, headers, ...);
+# `guardrail_info` is diffed per key over its NON-SECRET subset in
+# resources/guardrails.py (masked entries carry no drift signal) — see
+# secrets.py for the shared detection rules (moved there so the export and
+# the reconcilers cannot drift apart, issue #11).
 
 
 def _export_guardrails(client: LiteLLMClient) -> list[dict[str, Any]]:
@@ -398,6 +388,26 @@ def _export_guardrails(client: LiteLLMClient) -> list[dict[str, Any]]:
                     f"masked litellm_params value(s) {sorted(masked)} are not "
                     "exported; fill them in manually (write-once)",
                 )
+        # guardrail_info is diffed per key over its NON-SECRET subset in
+        # resources/guardrails.py, so the exporter strips the same shape of
+        # masked entries here — the two sides share secrets.py and must stay
+        # in lockstep. A masker echo (e.g. `"abcd***"`) landing in the spec
+        # would both mislead the operator and, if re-applied verbatim, be
+        # treated as desired state. Non-dict payloads stay opaque/untouched.
+        info = entry.get("guardrail_info")
+        if isinstance(info, dict):
+            filtered, masked = _strip_masked_params(info)
+            if filtered:
+                entry["guardrail_info"] = filtered
+            elif "guardrail_info" in entry:
+                del entry["guardrail_info"]
+            if masked:
+                _emit_warn(
+                    "guardrails",
+                    name,
+                    f"masked guardrail_info value(s) {sorted(masked)} are not "
+                    "exported; fill them in manually (write-once)",
+                )
         if entry:
             out.append(_empty_collections(entry))
     return out
@@ -406,24 +416,9 @@ def _export_guardrails(client: LiteLLMClient) -> list[dict[str, Any]]:
 def _strip_masked_params(
     params: dict[str, Any],
 ) -> tuple[dict[str, Any], list[str]]:
-    """Return (clean_params, masked_keys). Drops values that are provably
-    masked (contain `*`) or whose key the API would mask, keeping only
-    non-secret configuration the operator can re-declare."""
-    clean: dict[str, Any] = {}
-    masked: list[str] = []
-    for k, v in params.items():
-        key_is_sensitive = any(
-            kw in k.lower() for kw in _GUARDRAIL_SENSITIVE_KEYWORDS
-        )
-        if key_is_sensitive:
-            if v is not None:
-                masked.append(k)
-            continue
-        if isinstance(v, str) and _is_sensitive_value(v):
-            masked.append(k)
-            continue
-        clean[k] = v
-    return clean, masked
+    """Exporter wrapper around secrets.split_masked (shared detection rules
+    so the export and the reconcilers cannot drift apart — issue #11)."""
+    return split_masked(params)
 
 
 # -- policies --------------------------------------------------------------

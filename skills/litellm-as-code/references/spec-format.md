@@ -145,6 +145,17 @@ guardrails:
       description: "PII masking"
 ```
 
+> `guardrail_info` secrets are write-once like `credential_values`. The
+> reconciler diffs it **per key over its non-secret subset** (sensitive key
+> names such as `api_key`/`authorization`, masker-shaped values, and anything
+> nested below them carry no drift signal). Consequences:
+> - an export strips masked/nested secret entries (scalars in list slots
+>   become a `"<masked>"` placeholder so indices stay aligned) and warns;
+> - a benign change whose PATCH would replace the map and erase a live
+>   secret the spec cannot re-declare is **deferred** — the apply exits
+>   non-zero and tells you which path is at risk; declare that entry
+>   (unmasked) in the spec to unblock;
+
 ### policies
 
 ```yaml
