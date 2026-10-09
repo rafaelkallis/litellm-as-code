@@ -144,6 +144,28 @@ def test_guardrail_info_masked_entry_is_not_drift(tmp_path):
     assert info["notes"] == "note-plaintext"
 
 
+def test_dry_run_never_patches(tmp_path):
+    """Regression (Copilot r3, PR #20): plan-only runs must not mutate live
+    state — the update path records the UPDATE diff but skips the PATCH,
+    exactly like every other resource reconciler (dry-run contract)."""
+    client, fake = make_fake_client()
+    spec = _write_spec(tmp_path, SPEC)
+    reconcile(spec, client, dry_run=False)
+
+    changed = json.loads(spec.read_text())
+    changed["guardrails"][0]["guardrail_info"]["description"] = "Updated"
+    spec.write_text(json.dumps(changed))
+
+    plan = reconcile(spec, client, dry_run=True)
+    assert "pii-guard" in {
+        d.name for d in plan.diffs if d.action is Action.UPDATE
+    }
+    # nothing was patched
+    assert fake.guardrails["pii-guard"]["guardrail_info"]["description"] == (
+        "PII masking"
+    )
+
+
 def test_litellm_params_reasserted_on_patch(tmp_path):
     """When a comparable change fires a PATCH, litellm_params is re-asserted
     (like credential_values): the update payload carries the full params and

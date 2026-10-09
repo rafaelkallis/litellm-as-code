@@ -147,6 +147,8 @@ def reconcile_guardrails(
             continue
 
         diffs.append(Diff("guardrail", name, Action.UPDATE, changes))
+        if dry_run:
+            continue
         payload = dict(entry)
         # Re-assert litellm_params (secrets + non-secret config) since it
         # cannot be diffed against the masked read-back.

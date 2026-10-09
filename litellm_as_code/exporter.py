@@ -387,11 +387,12 @@ def _export_guardrails(client: LiteLLMClient) -> list[dict[str, Any]]:
                     f"masked litellm_params value(s) {sorted(masked)} are not "
                     "exported; fill them in manually (write-once)",
                 )
-        # guardrail_info is a comparable field (reconciled verbatim), so its
-        # payload must get the identical masked-value treatment — a masked
-        # credential echoed there would otherwise land in the spec in the
-        # clear and churn (or worse, be re-applied) on the next run (issue
-        # #11). Non-dict payloads stay opaque/untouched.
+        # guardrail_info is diffed per key over its NON-SECRET subset in
+        # resources/guardrails.py, so the exporter strips the same shape of
+        # masked entries here — the two sides share secrets.py and must stay
+        # in lockstep. A masker echo (e.g. `"abcd***"`) landing in the spec
+        # would both mislead the operator and, if re-applied verbatim, be
+        # treated as desired state. Non-dict payloads stay opaque/untouched.
         info = entry.get("guardrail_info")
         if isinstance(info, dict):
             filtered, masked = _strip_masked_params(info)
