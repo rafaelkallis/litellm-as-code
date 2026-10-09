@@ -41,13 +41,20 @@ class Diff:
         if self.action is Action.NOOP:
             return f"{self.resource_type:<11} {self.name:<38} ok"
         if self.action is Action.CREATE:
-            return f"{self.resource_type:<11} {self.name:<38} would be created"
-        if self.action is Action.DELETE:
-            return f"{self.resource_type:<11} {self.name:<38} would be deleted"
-        parts = ", ".join(
-            f"{k}: {old!r} -> {new!r}" for k, (old, new) in self.changes.items()
-        )
-        return f"{self.resource_type:<11} {self.name:<38} would be updated ({parts})"
+            line = f"{self.resource_type:<11} {self.name:<38} would be created"
+        elif self.action is Action.DELETE:
+            line = f"{self.resource_type:<11} {self.name:<38} would be deleted"
+        else:
+            parts = ", ".join(
+                f"{k}: {old!r} -> {new!r}" for k, (old, new) in self.changes.items()
+            )
+            line = f"{self.resource_type:<11} {self.name:<38} would be updated ({parts})"
+        # Outcomes the reconciler couldn't decide at diff time (e.g. policy
+        # draft-PUT vs recreate, member placeholders) are appended so plan
+        # output is honest about what the apply will do (Copilot r2, PR #19).
+        if self.message:
+            line += f" — {self.message}"
+        return line
 
 
 @dataclass

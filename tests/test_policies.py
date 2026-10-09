@@ -165,6 +165,9 @@ def test_draft_policy_drift_updates_in_place(tmp_path):
     updates = {d.name: d for d in plan.diffs if d.action is Action.UPDATE}
     assert "global-baseline" in updates
     assert updates["global-baseline"].message == "updated in place (draft PUT)"
+    # the outcome must be visible in rendered plan output, not just the field
+    assert "would be updated" in str(updates["global-baseline"])
+    assert "updated in place (draft PUT)" in str(updates["global-baseline"])
 
     # PUT path only: no delete, no re-create, identity (policy_id) preserved
     assert calls == []
@@ -226,6 +229,13 @@ def test_dry_run_drift_reports_both_paths(tmp_path):
         "update (draft PUT) or recreate (production)"
     )
     assert len(fake.policies) == 2  # nothing mutated
+    # rendered plan output names both possible apply outcomes (the changes
+    # rendering order is comparable_diff's pre-existing desired->live)
+    rendered = str(updates["global-baseline"])
+    assert "would be updated (description:" in rendered, rendered
+    assert "'planned change'" in rendered, rendered
+    assert "'Base guardrails for all requests'" in rendered, rendered
+    assert "update (draft PUT) or recreate (production)" in rendered, rendered
 
 
 def test_recreated_policy_id_never_collides_with_survivors(tmp_path):
