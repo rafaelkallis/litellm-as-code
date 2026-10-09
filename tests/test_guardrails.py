@@ -396,6 +396,51 @@ def test_list_scalar_mask_keeps_index_alignment(tmp_path):
     ]
 
 
+def test_litellm_params_nested_secret_is_protected(tmp_path):
+    """LiteLLM shallow-merges litellm_params: top-level params the spec
+    omits are preserved, but a re-declared container (the export's scrubbed
+    `headers: {X-Foo: bar}`) replaces the whole live nested map and would
+    erase the stripped Authorization entry on ANY comparable update (Copilot
+    r12, PR #20). The update must defer until the operator re-declares it."""
+    client, fake = make_fake_client()
+    spec = _write_spec(tmp_path, SPEC)
+    reconcile(spec, client, dry_run=False)
+    fake.guardrails["pii-guard"]["litellm_params"] = {
+        "guardrail": "presidio",
+        "mode": "pre_call",
+        "headers": {"X-Foo": "bar", "Authorization": "Bearer live-token-1"},
+    }
+
+    # exported shape: headers scrubbed top-level; drift on description
+    # (guardrail_info per-key) fires — but the PATCH would shallow-merge the
+    # scrubbed headers over the live one and erase the token: refuse
+    changed = json.loads(spec.read_text())
+    changed["guardrails"][0]["litellm_params"]["headers"] = {"X-Foo": "bar"}
+    changed["guardrails"][0]["guardrail_info"]["description"] = "Updated"
+    spec.write_text(json.dumps(changed))
+    plan = reconcile(spec, client, dry_run=True)
+    updates = {d.name: d for d in plan.diffs if d.action is Action.UPDATE}
+    assert "pii-guard" in updates
+    assert "deferred" in updates["pii-guard"].message
+    with pytest.raises(ReconcilerError):
+        reconcile(spec, client, dry_run=False)
+    assert fake.guardrails["pii-guard"]["litellm_params"]["headers"][
+        "Authorization"
+    ] == "Bearer live-token-1"
+
+    # re-declaring the nested param secret (plaintext) unblocks the update
+    changed["guardrails"][0]["litellm_params"]["headers"] = {
+        "X-Foo": "bar",
+        "Authorization": "Bearer fresh-token",
+    }
+    spec.write_text(json.dumps(changed))
+    reconcile(spec, client, dry_run=False)
+    assert fake.guardrails["pii-guard"]["litellm_params"]["headers"] == {
+        "X-Foo": "bar",
+        "Authorization": "Bearer fresh-token",
+    }
+
+
 def test_litellm_params_reasserted_on_patch(tmp_path):
     """When a comparable change fires a PATCH, litellm_params is re-asserted
     (like credential_values): the update payload carries the full params and

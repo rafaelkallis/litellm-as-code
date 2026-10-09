@@ -47,14 +47,6 @@ def is_sensitive_key(key: str) -> bool:
 MASK_PLACEHOLDER = "<masked>"
 
 
-# Placeholder left in place of a scrubbed LIST element: removing the entry
-# would shift every later index and desynchronize index-based reconciliation
-# (Copilot r11 on PR #20). The marker is deliberately NOT a secret-matched
-# shape — `is_masked_value` is False on it, nothing looks like "usable"
-# re-assertion, and operators re-declaring the plaintext simply replace it.
-MASK_PLACEHOLDER = "<masked>"
-
-
 def is_masked_value(value: Any) -> bool:
     # LiteLLM's masker keeps a short prefix/suffix and produces an interior
     # asterisk run ("ab****cd"), or "*****" for short values — so the shape

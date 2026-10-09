@@ -11,12 +11,14 @@ masker-shaped values carry no drift signal; see secrets.py). We also re-assert
 the spec's `litellm_params` whenever an update fires (write-once +
 re-assert-on-change, exactly like `credential_values`).
 
-`guardrail_info` updates replace the whole nested map in-flight, so an update
-whose spec map omits a live secret entry would DELETE that write-once value
-(the plaintext cannot be read back for re-assertion). Such updates are
-DEFERRED — the diff keeps surfacing the change with a message that tells the
-operator how to unblock (declare the entry unmasked in the spec), but nothing
-is patched until then.
+`guardrail_info` updates replace the whole nested map in-flight, and
+`litellm_params` is shallow-merged (re-declared containers replace their live
+counterparts), so an update the spec cannot match to the live secrets inside
+those containers would DELETE write-once values (the plaintext cannot be read
+back for re-assertion). Such updates are DEFERRED — the diff keeps surfacing
+the change with a message that tells the operator how to unblock (declare the
+entry unmasked in the spec), the apply refuses with a non-zero exit, and
+nothing is patched until then (Copilot r2/r4/r12 on PR #20).
 
 Config-only guardrails: `/v2/guardrails/list` also returns entries loaded from
 the proxy's startup `config.yaml` with `guardrail_id=None`. Those are startup
@@ -213,6 +215,30 @@ def _dropped_secret_keys(entry: Any, existing: dict[str, Any]) -> list[str]:
     )
 
 
+def _dropped_secret_params(entry: Any, existing: dict[str, Any]) -> list[str]:
+    """Write-once paths inside `litellm_params` a PATCH could erase (r12).
+
+    LiteLLM v1.97.0 shallow-merges `litellm_params`: top-level keys the spec
+    omits are preserved by the proxy, but a container the spec DOES declare
+    (e.g. the scrubbed export's `headers: {X-Foo: bar}`) replaces the whole
+    live nested map — erasing any stripped write-once entry inside it. Only
+    differences within re-declared containers are therefore at risk.
+    """
+    want_params = entry.get("litellm_params")
+    have_params = existing.get("litellm_params")
+    if not isinstance(want_params, dict) or not isinstance(have_params, dict):
+        return []
+    out: list[str] = []
+    for k, v in want_params.items():
+        if not isinstance(v, (dict, list)):
+            continue  # scalar the spec re-asserts: desired state, never at risk
+        h = have_params.get(k)
+        if not isinstance(h, type(v)):
+            continue  # live container absent: nothing write-once to erase
+        out.extend(_dropped_secret_paths(v, h, k))
+    return out
+
+
 def reconcile_guardrails(
     client: LiteLLMClient,
     spec_entries: list[dict[str, Any]],
@@ -249,16 +275,18 @@ def reconcile_guardrails(
             diffs.append(Diff("guardrail", name, Action.NOOP))
             continue
 
-        at_risk = _dropped_secret_keys(entry, existing)
+        at_risk = sorted(
+            set(_dropped_secret_keys(entry, existing))
+            | set(_dropped_secret_params(entry, existing))
+        )
         if at_risk:
-            # Writing the change would replace the live map and destroy
-            # write-once secrets the spec doesn't (and can't) re-declare:
-            # defer. Plan-only runs surface it as a diff; apply REFUSES
-            # (nonzero exit) — returning success while drift remains
-            # indefinitely would lie to automation (Copilot r2 + r4 on
-            # PR #20).
+            # Writing the change would replace/erase write-once secrets the
+            # spec doesn't (and can't) re-declare: defer. Plan-only runs
+            # surface it as a diff; apply REFUSES (nonzero exit) — returning
+            # success while drift remains indefinitely would lie to
+            # automation (Copilot r2 + r4 + r12 on PR #20).
             reason = (
-                "update would drop write-once guardrail_info secret(s) "
+                "update would drop write-once secret(s) "
                 f"{', '.join(at_risk)} whose plaintext cannot be "
                 "re-asserted — declare them (unmasked) in the spec to apply"
             )
