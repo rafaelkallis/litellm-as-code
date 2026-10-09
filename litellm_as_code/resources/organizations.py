@@ -24,6 +24,7 @@ from typing import Any
 from ..api import LiteLLMClient
 from ..diff import comparable_diff
 from ..types import Action, Diff, ReconcilerError
+from ..validation import DEFAULT_ORG_ROLE
 
 COMPARABLE = ["organization_alias", "models"]
 
@@ -134,7 +135,15 @@ def reconcile_org_members(
         live_org = live_by_id.get(org_id, {})
         live_members = live_org.get("members", []) or []
 
-        want_by_id = {m["user_id"]: m.get("role") for m in want if m.get("user_id")}
+        # An omitted role is server-defaulted ("internal_user") and echoed
+        # back on the next read; resolving the shared default here is what
+        # stops the perpetual role churn (issue #7) — and guarantees the role
+        # update below never fires with role=None.
+        want_by_id = {
+            m["user_id"]: m.get("role") or DEFAULT_ORG_ROLE
+            for m in want
+            if m.get("user_id")
+        }
         live_by_user = {
             m.get("user_id"): m.get("user_role") for m in live_members if m.get("user_id")
         }
@@ -160,8 +169,10 @@ def reconcile_org_members(
 
         for uid in live_by_user:
             if uid not in want_by_id:
+                # Removals render as DELETE, not UPDATE({}), so the plan
+                # describes a delete (issue #7).
                 diffs.append(
-                    Diff("organization_member", f"{display}/{uid}", Action.UPDATE, {})
+                    Diff("organization_member", f"{display}/{uid}", Action.DELETE)
                 )
                 if not dry_run:
                     client.delete_organization_member(org_id, uid)

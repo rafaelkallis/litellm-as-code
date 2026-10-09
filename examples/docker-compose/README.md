@@ -57,7 +57,7 @@ docker compose run --rm config               # apply / converge the proxy state
 ```
 
 Re-running `config` is **idempotent**: the second run reports `0 to create,
-0 to update, N unchanged` and exits `0`.
+0 to update, 0 to delete, N unchanged` and exits `0`.
 
 ## Point the proxy at your external service
 

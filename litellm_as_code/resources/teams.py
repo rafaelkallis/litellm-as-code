@@ -17,6 +17,7 @@ from typing import Any
 from ..api import LiteLLMClient
 from ..diff import comparable_diff
 from ..types import Action, Diff, ReconcilerError
+from ..validation import DEFAULT_TEAM_ROLE
 
 COMPARABLE = ["team_alias", "organization_id", "max_budget", "budget_duration", "models"]
 
@@ -180,7 +181,13 @@ def reconcile_team_members(
         team_info = _team_info(client, team_id, retry=bool(team.get("_just_created")))
         live_members = team_info.get("members_with_roles", [])
 
-        want_by_id = {m["user_id"]: m.get("role") for m in want}
+        # An omitted role is server-defaulted ("user") and echoed back on the
+        # next read; resolving the shared default here is what stops the
+        # perpetual role churn (issue #7) — and guarantees the role update
+        # below never fires with role=None.
+        want_by_id = {
+            m["user_id"]: m.get("role") or DEFAULT_TEAM_ROLE for m in want
+        }
         live_by_id = {m["user_id"]: m.get("role") for m in live_members if "user_id" in m}
 
         for uid, role in want_by_id.items():
@@ -204,7 +211,9 @@ def reconcile_team_members(
 
         for uid in live_by_id:
             if uid not in want_by_id:
-                diffs.append(Diff("team_member", f"{display}/{uid}", Action.UPDATE, {}))
+                # Removals render as DELETE, not UPDATE({}), so the plan
+                # describes a delete (issue #7).
+                diffs.append(Diff("team_member", f"{display}/{uid}", Action.DELETE))
                 if not dry_run:
                     client.delete_team_member(team_id, user_id=uid)
 

@@ -121,7 +121,9 @@ class FakeLiteLLM:
 
     def _add_members(self, team_id, members):  # type: ignore[no-untyped-def]
         for m in members:
-            self.team_members[(team_id, m["user_id"])] = m["role"]
+            # Mirror the real proxy: an omitted role is server-defaulted and
+            # echoed back on the next read (issue #7).
+            self.team_members[(team_id, m["user_id"])] = m["role"] or "user"
         return {}
 
     def _update_member_role(self, team_id, user_id, *, role):  # type: ignore[no-untyped-def]
@@ -276,11 +278,17 @@ class FakeLiteLLM:
 
     def _add_org_members(self, org_id, members):  # type: ignore[no-untyped-def]
         for m in members:
-            self.org_members[(org_id, m["user_id"])] = m["role"]
+            # Mirror the real proxy: an omitted role is server-defaulted and
+            # echoed back on the next read (issue #7).
+            self.org_members[(org_id, m["user_id"])] = m["role"] or "internal_user"
         return {}
 
     def _update_org_member(self, org_id, user_id, role=None):  # type: ignore[no-untyped-def]
-        if (org_id, user_id) in self.org_members and role is not None:
+        # Parity with the hardened api.update_organization_member (issue #7):
+        # a role-less update must not pass through silently.
+        if role is None:
+            raise AssertionError("/organization/member_update requires a role")
+        if (org_id, user_id) in self.org_members:
             self.org_members[(org_id, user_id)] = role
         return {}
 

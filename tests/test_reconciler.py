@@ -11,7 +11,7 @@ import json
 import pytest
 import requests
 
-from litellm_as_code.reconciler import reconcile
+from litellm_as_code.reconciler import _render_plan, reconcile
 from litellm_as_code.types import Action
 
 from tests import make_fake_client
@@ -202,15 +202,67 @@ def test_team_member_role_update_and_removal(ctx, tmp_path):
 
     plan = reconcile(str(spec), client, dry_run=False)
     updates = {d.name: d for d in plan.diffs if d.action is Action.UPDATE}
+    deletes = {d.name: d for d in plan.diffs if d.action is Action.DELETE}
 
     # role update for u2 within the team
     assert "prod/u2" in updates
     assert updates["prod/u2"].changes["role"] == ("user", "admin")
-    # removal of u1 emits an UPDATE diff (member deleted)
-    assert "prod/u1" in updates
+    # removal of u1 renders as a DELETE, not an UPDATE({}) (issue #7)
+    assert "prod/u1" in deletes
+    assert "prod/u1" not in updates
+    assert deletes["prod/u1"].changes == {}
 
     assert fake.team_members[("team-prod", "u2")] == "admin"
     assert ("team-prod", "u1") not in fake.team_members
+
+
+def test_team_member_role_omitted_does_not_churn(ctx, tmp_path):
+    """A spec member with an omitted role must converge: the reconciler
+    resolves the shared team role default instead of diffing `None` against
+    the server's defaulted echo (issue #7) — and the member_add carries the
+    resolved role, never a bare None."""
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec_data = json.loads(json.dumps(SPEC))
+    spec_data["teams"][0]["members_with_roles"] = [{"user_id": "u1"}]
+    spec.write_text(json.dumps(spec_data))
+
+    plan1 = reconcile(str(spec), client, dry_run=False)
+    updates1 = [d for d in plan1.diffs if d.action is Action.UPDATE]
+    assert updates1 == [], f"first run must not churn: {updates1}"
+    assert fake.team_members[("team-prod", "u1")] == "user"  # server default
+
+    plan2 = reconcile(str(spec), client, dry_run=False)
+    member_diffs = [d for d in plan2.diffs if d.resource_type == "team_member"]
+    assert member_diffs == [], member_diffs
+
+
+def test_member_removal_renders_deleted_and_counts_for_exit(ctx, tmp_path, capsys):
+    """A member removal in dry-run renders as 'would be deleted' (not
+    'would be updated ()') and delete_count counts toward the exit-2
+    condition (issue #7)."""
+    client, fake = ctx
+    spec = tmp_path / "spec.yml"
+    spec.write_text(json.dumps(SPEC))
+    reconcile(str(spec), client, dry_run=False)
+
+    changed = json.loads(spec.read_text())
+    changed["teams"][0]["members_with_roles"] = [
+        {"user_id": "u2", "role": "admin"},
+    ]
+    spec.write_text(json.dumps(changed))
+
+    plan = reconcile(str(spec), client, dry_run=True)
+    deletes = [d for d in plan.diffs if d.action is Action.DELETE]
+    assert [d.name for d in deletes] == ["prod/u1"]
+    assert plan.delete_count == 1
+    # dry-run must not mutate the fake proxy
+    assert ("team-prod", "u1") in fake.team_members
+
+    _render_plan(plan)
+    out = capsys.readouterr().out
+    assert "prod/u1" in out and "would be deleted" in out
+    assert out.count("to delete") == 1
 
 
 def test_model_cost_is_stable_across_reconciles(ctx, tmp_path):
