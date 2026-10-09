@@ -5,10 +5,12 @@ unique and generates `guardrail_id`). Update/delete are `guardrail_id`-keyed,
 so we resolve the id from the live list after matching by name.
 
 Secrets: `litellm_params` (e.g. `api_key`) is read back MASKED, like
-credentials — so it can never be diffed against live. We diff only
-non-secret comparable fields (`guardrail_name`, `guardrail_info`) and
-re-assert the spec's `litellm_params` whenever an update fires (write-once +
-re-assert-on-change, exactly like `credential_values`).
+credentials — so it can never be diffed against live. `guardrail_info` is
+diffed per key but ONLY over its non-secret subset (sensitive key names and
+masker-shaped values carry no drift signal; see secrets.py); the secret
+subset is write-once like `litellm_params`. We also re-assert the spec's
+`litellm_params` whenever an update fires (write-once + re-assert-on-change,
+exactly like `credential_values`).
 
 Config-only guardrails: `/v2/guardrails/list` also returns entries loaded from
 the proxy's startup `config.yaml` with `guardrail_id=None`. Those are startup
@@ -23,11 +25,43 @@ from typing import Any
 
 from ..api import LiteLLMClient
 from ..diff import comparable_diff
+from ..secrets import is_secret_entry
 from ..types import Action, Diff
 
 # Non-secret comparable fields. `litellm_params` is deliberately excluded:
 # the API masks it on read, so diffing it would cause perpetual drift.
-COMPARABLE = ["guardrail_name", "guardrail_info"]
+# `guardrail_info` IS comparable, but only its NON-SECRET subset — masked
+# entries in the live echo are skipped (see _guardrail_info_changes).
+COMPARABLE = ["guardrail_name"]
+
+
+def _guardrail_info_changes(want: Any, have: Any) -> dict[str, tuple[Any, Any]]:
+    """Per-key diff of a dict `guardrail_info`, skipping secret-shaped keys.
+
+    Secret entries (sensitive key names, values in the masker's output
+    shape — see secrets.py) carry NO drift signal: the exporter strips them
+    at export time (they are write-once), so a spec's benign subset must not
+    churn against a live dict still holding the masked entry (issue #11,
+    PR #20 Copilot r1). Non-dict payloads stay opaque and keep the exact
+    equality `comparable_diff` would apply, with one exception: an absent
+    spec key against a dict live value diffs per-key over the live vector,
+    so a fully-secret-stripped export is not a hard None-vs-dict conflict.
+    """
+    if isinstance(have, dict):
+        want_keys = want if isinstance(want, dict) else {}
+        changes: dict[str, tuple[Any, Any]] = {}
+        for k in sorted(set(want_keys) | set(have)):
+            if is_secret_entry(k, want_keys.get(k)) or is_secret_entry(
+                k, have.get(k)
+            ):
+                continue
+            if want_keys.get(k) != have.get(k):
+                changes[f"guardrail_info.{k}"] = (want_keys.get(k), have.get(k))
+        return changes
+    # not a dict on the live side: comparable_diff semantics (exact value)
+    if want == have:
+        return {}
+    return {"guardrail_info": (want, have)}
 
 
 def reconcile_guardrails(
@@ -57,6 +91,11 @@ def reconcile_guardrails(
 
         guardrail_id = existing.get("guardrail_id")
         changes = comparable_diff(entry, existing, COMPARABLE)
+        changes.update(
+            _guardrail_info_changes(
+                entry.get("guardrail_info"), existing.get("guardrail_info")
+            )
+        )
         diffs.append(
             Diff(
                 "guardrail",

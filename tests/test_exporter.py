@@ -231,17 +231,20 @@ def test_export_masked_value_wildcard_keeps_glob_values(converged, capsys):
         "guardrail": "presidio",
         "model_pattern": "openai/*",
         "name_prefix": "gpt-4*",
-        "api_key": "abcd***",  # masker output shape -> still stripped
+        # a key WITHOUT any sensitive keyword, so this exercises the
+        # trailing-asterisk value heuristic itself, not the keyword rule
+        # (Copilot r1 on PR #20; issue #11)
+        "custom_label": "abcd***",
     }
     exported = build_spec(client)
     g = next(x for x in exported["guardrails"] if x["guardrail_name"] == "pii-guard")
     assert g["litellm_params"]["model_pattern"] == "openai/*"
     assert g["litellm_params"]["name_prefix"] == "gpt-4*"
-    assert "api_key" not in g["litellm_params"]
+    assert "custom_label" not in g["litellm_params"]
 
     err = capsys.readouterr().err
     assert "masked litellm_params value(s)" in err
-    assert "'api_key'" in err
+    assert "'custom_label'" in err
     assert "model_pattern" not in err
     assert "name_prefix" not in err
 
@@ -276,6 +279,33 @@ def test_export_guardrail_info_benign_survives(converged):
     exported = build_spec(client)
     g = next(x for x in exported["guardrails"] if x["guardrail_name"] == "pii-guard")
     assert g["guardrail_info"] == info
+
+
+def test_export_reapply_masked_guardrail_info_converges(converged, tmp_path):
+    """End-to-end: a live guardrail_info holding a masked entry is exported
+    with the entry stripped; re-applying that export must CONVERGE (no
+    perpetual guardrail PATCH) — the reconciler skips the secret subset of
+    guardrail_info exactly like the exporter does (issue #11, Copilot r1 on
+    PR #20)."""
+    client, fake = converged
+    fake.guardrails["pii-guard"]["guardrail_info"] = {
+        "description": "PII masking",
+        "api_key": "abcd***",
+    }
+
+    out = tmp_path / "export.yml"
+    exported = export_spec(client, out)
+    eg = next(x for x in exported["guardrails"] if x["guardrail_name"] == "pii-guard")
+    assert "api_key" not in eg["guardrail_info"]
+
+    plan = reconcile(str(out), client, dry_run=False)
+    g_diffs = [d for d in plan.diffs if d.resource_type == "guardrail"]
+    assert not any(d.action is Action.UPDATE for d in g_diffs), g_diffs
+
+    # and it stays converged
+    plan2 = reconcile(str(out), client, dry_run=False)
+    g_diffs2 = [d for d in plan2.diffs if d.resource_type == "guardrail"]
+    assert all(d.action is Action.NOOP for d in g_diffs2), g_diffs2
 
 
 def test_export_team_info_failure_aborts(converged, tmp_path):

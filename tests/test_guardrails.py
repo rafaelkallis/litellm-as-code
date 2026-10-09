@@ -72,11 +72,51 @@ def test_guardrail_info_drift_patches(tmp_path):
     plan = reconcile(spec, client, dry_run=False)
     updates = {d.name: d for d in plan.diffs if d.action is Action.UPDATE}
     assert "pii-guard" in updates
-    assert updates["pii-guard"].changes["guardrail_info"] == (
-        {"description": "Updated"},
-        {"description": "PII masking"},
+    # guardrail_info is diffed per key (non-secret subset only)
+    assert updates["pii-guard"].changes["guardrail_info.description"] == (
+        "Updated",
+        "PII masking",
     )
     assert fake.guardrails["pii-guard"]["guardrail_info"]["description"] == "Updated"
+
+
+def test_guardrail_info_masked_entry_is_not_drift(tmp_path):
+    """A live guardrail_info still holding the masked secret entry must NOT
+    churn against the spec's stripped (benign-only) subset: the secret subset
+    is write-once and carries no diff signal (issue #11, Copilot r1 on PR
+    #20 — without this, the exported spec would PATCH forever, either
+    deleting the credential or drifting perpetually)."""
+    client, fake = make_fake_client()
+    spec = _write_spec(tmp_path, SPEC)
+    reconcile(spec, client, dry_run=False)
+
+    # emulate the export: the spec carries only the benign subset; live keeps
+    # the masked entry the exporter stripped
+    changed = json.loads(spec.read_text())
+    changed["guardrails"][0]["guardrail_info"] = {"description": "PII masking"}
+    spec.write_text(json.dumps(changed))
+    fake.guardrails["pii-guard"]["guardrail_info"] = {
+        "description": "PII masking",
+        "api_key": "abcd***",
+        "notes": "***",  # masked-value shape on a benign key: also skipped
+    }
+
+    plan = reconcile(spec, client, dry_run=False)
+    guardrail_diffs = [d for d in plan.diffs if d.resource_type == "guardrail"]
+    assert all(d.action is Action.NOOP for d in guardrail_diffs), guardrail_diffs
+    # the masked entry survives — not destroyed by a churn PATCH
+    assert fake.guardrails["pii-guard"]["guardrail_info"]["api_key"] == "abcd***"
+
+    # ...but a NON-secret, benign change on either side still drifts
+    changed["guardrails"][0]["guardrail_info"]["description"] = "Updated"
+    spec.write_text(json.dumps(changed))
+    plan2 = reconcile(spec, client, dry_run=False)
+    updates = {d.name: d for d in plan2.diffs if d.action is Action.UPDATE}
+    assert "pii-guard" in updates
+    assert updates["pii-guard"].changes["guardrail_info.description"] == (
+        "Updated",
+        "PII masking",
+    )
 
 
 def test_litellm_params_reasserted_on_patch(tmp_path):

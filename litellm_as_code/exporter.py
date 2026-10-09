@@ -40,6 +40,7 @@ import yaml
 
 from .api import LiteLLMClient
 from .log import warn
+from .secrets import split_masked
 from .spec import load_spec
 
 # Sections in reconcile order; the exporter emits exactly these, omitting any
@@ -354,26 +355,10 @@ def _export_keys(client: LiteLLMClient) -> list[dict[str, Any]]:
 
 _GUARDRAIL_KEYS = ["guardrail_name", "litellm_params", "guardrail_info"]
 
-# `litellm_params` may carry write-once secrets (api_key, headers, ...) that
-# the API masks on read (`_get_masked_values`). Mirror the API's sensitive-key
-# keywords so we strip masked values instead of persisting them as desired
-# state (they'd be sent on re-apply and yield a nonfunctional guardrail).
-_GUARDRAIL_SENSITIVE_KEYWORDS = (
-    "token",
-    "key",
-    "secret",
-    "credential",
-    "password",
-    "passwd",
-)
-
-
-def _is_sensitive_value(value: Any) -> bool:
-    # LiteLLM's masker produces values like "abcd***" (3+ trailing asterisks).
-    # A lone embedded "*" in a glob/pattern value ("openai/*", "gpt-4*") is a
-    # legitimate configuration value, not a masked secret — exporting it is
-    # required for re-apply to reproduce the row (issue #11).
-    return isinstance(value, str) and value.endswith("***")
+# `litellm_params` may carry write-once secrets (api_key, headers, ...) and
+# `guardrail_info` is a comparable field reconciled verbatim — see
+# secrets.py for the shared detection rules (moved there so the export and
+# the reconcilers cannot drift apart, issue #11).
 
 
 def _export_guardrails(client: LiteLLMClient) -> list[dict[str, Any]]:
@@ -429,25 +414,9 @@ def _export_guardrails(client: LiteLLMClient) -> list[dict[str, Any]]:
 def _strip_masked_params(
     params: dict[str, Any],
 ) -> tuple[dict[str, Any], list[str]]:
-    """Return (clean_params, masked_keys). Drops values that are provably
-    masked (3+ trailing `*`, the masker's output shape) or whose key the API
-    would mask, keeping only non-secret configuration the operator can
-    re-declare."""
-    clean: dict[str, Any] = {}
-    masked: list[str] = []
-    for k, v in params.items():
-        key_is_sensitive = any(
-            kw in k.lower() for kw in _GUARDRAIL_SENSITIVE_KEYWORDS
-        )
-        if key_is_sensitive:
-            if v is not None:
-                masked.append(k)
-            continue
-        if isinstance(v, str) and _is_sensitive_value(v):
-            masked.append(k)
-            continue
-        clean[k] = v
-    return clean, masked
+    """Exporter wrapper around secrets.split_masked (shared detection rules
+    so the export and the reconcilers cannot drift apart — issue #11)."""
+    return split_masked(params)
 
 
 # -- policies --------------------------------------------------------------
