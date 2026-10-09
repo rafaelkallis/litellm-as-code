@@ -1,20 +1,23 @@
 """Shared secret-shape helpers for masked values coming off the wire.
 
 The LiteLLM read API masks secret material (see ../exporter.py and
-resources/guardrails.py): values come back with 3+ trailing asterisks
-("abcd***") and never as plaintext, so a masked echo can never be compared
-against desired state. Both the exporter (do not persist masked echoes) and
-the reconcilers (do not diff masked echoes) need the SAME detection rules —
-keeping them in one place prevents the two from drifting apart (issue #11).
+resources/guardrails.py): values come back with a run of asterisks —
+`_get_masked_values` keeps a short prefix/suffix ("ab****cd") and emits
+"*****" for short values — and never as plaintext, so a masked echo can
+never be compared against desired state. Both the exporter (do not persist
+masked echoes) and the reconcilers (do not diff masked echoes) need the
+SAME detection rules — keeping them in one place prevents the two from
+drifting apart (issue #11).
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-# Key-name keywords the API masks. Stronger guard than the value heuristic:
-# a key carrying any of these prefixes/substrings is treated as secret
-# regardless of its value shape.
+# Key-name keywords the API masks. Mirrors LiteLLM v1.97.0's sensitive-key
+# handling (it also masks `authorization`, e.g. guardrail Authorization
+# headers). Stronger guard than the value heuristic: a key carrying any of
+# these substrings is treated as secret regardless of its value shape.
 SENSITIVE_KEYWORDS = (
     "token",
     "key",
@@ -22,6 +25,7 @@ SENSITIVE_KEYWORDS = (
     "credential",
     "password",
     "passwd",
+    "authorization",
 )
 
 
@@ -31,11 +35,13 @@ def is_sensitive_key(key: str) -> bool:
 
 
 def is_masked_value(value: Any) -> bool:
-    # LiteLLM's masker produces values like "abcd***" (3+ trailing
-    # asterisks). A lone embedded "*" in a glob/pattern value ("openai/*",
-    # "gpt-4*") is a legitimate configuration value, not a masked secret —
-    # exporting it is required for re-apply to reproduce the row (issue #11).
-    return isinstance(value, str) and value.endswith("***")
+    # LiteLLM's masker keeps a short prefix/suffix and produces an interior
+    # asterisk run ("ab****cd"), or "*****" for short values — so the shape
+    # is ANY run of >= 3 asterisks, not a trailing one. A lone embedded "*"
+    # in a glob/pattern value ("openai/*", "gpt-4*") is a legitimate
+    # configuration value, not a masked secret — exporting it is required
+    # for re-apply to reproduce the row (issue #11).
+    return isinstance(value, str) and "***" in value
 
 
 def is_secret_entry(key: str, value: Any) -> bool:

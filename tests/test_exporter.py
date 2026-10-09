@@ -223,7 +223,8 @@ def test_export_guardrail_masked_params_are_stripped(converged, tmp_path):
 
 def test_export_masked_value_wildcard_keeps_glob_values(converged, capsys):
     """The masked-value heuristic matches the LiteLLM masker's output shape
-    (3+ trailing asterisks). A lone embedded '*' in a glob/pattern value is a
+    (an interior run of 3+ asterisks — `_get_masked_values` keeps a short
+    prefix/suffix). A lone embedded '*' in a glob/pattern value is a
     legitimate configuration value and must survive the export WITHOUT a
     masked-value warn (issue #11)."""
     client, fake = converged
@@ -232,7 +233,7 @@ def test_export_masked_value_wildcard_keeps_glob_values(converged, capsys):
         "model_pattern": "openai/*",
         "name_prefix": "gpt-4*",
         # a key WITHOUT any sensitive keyword, so this exercises the
-        # trailing-asterisk value heuristic itself, not the keyword rule
+        # mask-shape value heuristic itself, not the keyword rule
         # (Copilot r1 on PR #20; issue #11)
         "custom_label": "abcd***",
     }
@@ -258,15 +259,23 @@ def test_export_guardrail_info_masked_values_are_stripped(converged, capsys):
     fake.guardrails["pii-guard"]["guardrail_info"] = {
         "description": "PII masking",
         "api_key": "abcd***",
+        # LiteLLM v1.97.0 also masks `authorization` (Copilot r8, PR #20):
+        # this stays PLAINTEXT in a verbatim-echoed guardrail_info, and must
+        # be caught by the keyword rule, not the value heuristic
+        "Authorization": "Bearer live-token-1",
+        # an interior mask run (prefix/suffix kept): value-shape rule
+        "custom_label": "ab****cd",
     }
     exported = build_spec(client)
     g = next(x for x in exported["guardrails"] if x["guardrail_name"] == "pii-guard")
     assert g["guardrail_info"] == {"description": "PII masking"}
 
-    # benign values must still survive; the masked key is named in the WARN
+    # benign values must still survive; the masked keys are named in the WARN
     err = capsys.readouterr().err
     assert "masked guardrail_info value(s)" in err
     assert "'api_key'" in err
+    assert "'Authorization'" in err
+    assert "'custom_label'" in err
     assert "description" not in err
 
 
