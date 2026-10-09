@@ -96,15 +96,40 @@ def test_member_role_update_and_removal(tmp_path):
 
     plan = reconcile(spec, client, dry_run=False)
     updates = {d.name: d for d in plan.diffs if d.action is Action.UPDATE}
+    deletes = {d.name: d for d in plan.diffs if d.action is Action.DELETE}
 
     # role update for u2
     assert "acme/u2" in updates
     assert updates["acme/u2"].changes["role"] == ("internal_user", "org_admin")
-    # removal of u1
-    assert "acme/u1" in updates
+    # removal of u1 renders as a DELETE, not an UPDATE({}) (issue #7)
+    assert "acme/u1" in deletes
+    assert "acme/u1" not in updates
+    assert deletes["acme/u1"].changes == {}
 
     assert fake.org_members[("org-acme", "u2")] == "org_admin"
     assert ("org-acme", "u1") not in fake.org_members
+
+
+def test_org_member_role_omitted_does_not_churn(tmp_path):
+    """A spec org member with an omitted role must converge: the reconciler
+    resolves the shared org role default instead of diffing `None` against
+    the server's defaulted echo (issue #7) — and a role-less
+    /organization/member_update can never fire (the fake asserts on it)."""
+    client, fake = make_fake_client()
+    spec_data = json.loads(json.dumps(SPEC))
+    spec_data["organizations"][0]["members_with_roles"] = [{"user_id": "u1"}]
+    spec = _write_spec(tmp_path, spec_data)
+
+    plan1 = reconcile(spec, client, dry_run=False)
+    updates1 = [d for d in plan1.diffs if d.action is Action.UPDATE]
+    assert updates1 == [], f"first run must not churn: {updates1}"
+    assert fake.org_members[("org-acme", "u1")] == "internal_user"  # server default
+
+    plan2 = reconcile(spec, client, dry_run=False)
+    member_diffs = [
+        d for d in plan2.diffs if d.resource_type == "organization_member"
+    ]
+    assert member_diffs == [], member_diffs
 
 
 def test_dry_run_does_not_create(tmp_path):

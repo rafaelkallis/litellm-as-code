@@ -12,6 +12,7 @@ class Action(str, Enum):
 
     CREATE = "create"
     UPDATE = "update"
+    DELETE = "delete"
     NOOP = "noop"
 
     # Human-friendly past/present tense for CLI output.
@@ -20,6 +21,7 @@ class Action(str, Enum):
         return {
             Action.CREATE: "created",
             Action.UPDATE: "updated",
+            Action.DELETE: "deleted",
             Action.NOOP: "unchanged",
         }[self]
 
@@ -40,6 +42,8 @@ class Diff:
             return f"{self.resource_type:<11} {self.name:<38} ok"
         if self.action is Action.CREATE:
             return f"{self.resource_type:<11} {self.name:<38} would be created"
+        if self.action is Action.DELETE:
+            return f"{self.resource_type:<11} {self.name:<38} would be deleted"
         parts = ", ".join(
             f"{k}: {old!r} -> {new!r}" for k, (old, new) in self.changes.items()
         )
@@ -59,6 +63,10 @@ class Plan:
     @property
     def update_count(self) -> int:
         return sum(1 for d in self.diffs if d.action is Action.UPDATE)
+
+    @property
+    def delete_count(self) -> int:
+        return sum(1 for d in self.diffs if d.action is Action.DELETE)
 
     @property
     def noop_count(self) -> int:

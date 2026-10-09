@@ -29,7 +29,7 @@ def _render_plan(plan: Plan) -> None:
         print(str(diff))
     print(
         f"\n{plan.create_count} to create, {plan.update_count} to update, "
-        f"{plan.noop_count} unchanged."
+        f"{plan.delete_count} to delete, {plan.noop_count} unchanged."
     )
 
 
@@ -113,7 +113,8 @@ def run(
     _render_plan(plan)
 
     # exit code semantics like terraform plan/apply diff detection:
-    # 0 = no diff / applied cleanly, 2 = plan shows changes (dry-run only)
-    if dry_run and (plan.create_count + plan.update_count):
+    # 0 = no diff / applied cleanly, 2 = plan shows changes (dry-run only).
+    # Deletions count as changes (issue #7: member removals are DELETE diffs).
+    if dry_run and (plan.create_count + plan.update_count + plan.delete_count):
         return 2
     return 0

@@ -38,7 +38,7 @@ then apply twice):
   --base-url http://localhost:4000 --api-key "$LITELLM_MASTER_KEY"
 ```
 
-A converged apply prints `0 to create, 0 to update, N unchanged` and a
+A converged apply prints `0 to create, 0 to update, 0 to delete, N unchanged` and a
 subsequent `--dry-run` exits `0`.
 
 ## What each variant covers

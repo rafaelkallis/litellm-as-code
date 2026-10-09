@@ -68,19 +68,28 @@ UserRole = Literal["proxy_admin", "admin", "internal_user", "internal_user_viewe
 _USER_ROLES: set[str] = set(UserRole.__args__)  # type: ignore[attr-defined]
 _USER_ROLE_LIST = ", ".join(sorted(_USER_ROLES))
 
+# Server-side role defaults for members. The member reconcilers read the RAW
+# spec dicts (load_spec returns the raw YAML; the validated models are
+# discarded), so Pydantic's per-model defaults never apply at reconcile time.
+# These constants are the single source of truth for the server defaults — the
+# Pydantic models below reference them so the two cannot drift (issue #7: an
+# omitted role must not churn against the server's defaulted echo).
+DEFAULT_ORG_ROLE: str = "internal_user"
+DEFAULT_TEAM_ROLE: str = "user"
+
 
 class OrgMember(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     user_id: NonEmptyStr
-    role: OrgRole = "internal_user"
+    role: OrgRole = DEFAULT_ORG_ROLE
 
 
 class TeamMember(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     user_id: NonEmptyStr
-    role: TeamRole = "user"
+    role: TeamRole = DEFAULT_TEAM_ROLE
 
 
 # -- resource models ---------------------------------------------------------

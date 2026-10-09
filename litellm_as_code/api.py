@@ -277,12 +277,19 @@ class LiteLLMClient:
         organization_id: str,
         user_id: str,
         *,
-        role: str | None = None,
+        role: str,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"organization_id": organization_id, "user_id": user_id}
-        if role:
-            payload["role"] = role
-        return self._request("PATCH", "/organization/member_update", json=payload)
+        """Update an org member's role.
+
+        `role` is required (parity with update_team_member_role, issue #7):
+        PATCH /organization/member_update with a falsy role would silently
+        omit the key and no-op against a diff that claims a change.
+        """
+        return self._request(
+            "PATCH",
+            "/organization/member_update",
+            json={"organization_id": organization_id, "user_id": user_id, "role": role},
+        )
 
     def delete_organization_member(
         self, organization_id: str, user_id: str
