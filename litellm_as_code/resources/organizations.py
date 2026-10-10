@@ -23,10 +23,43 @@ from typing import Any
 
 from ..api import LiteLLMClient
 from ..diff import comparable_diff
+from ..log import warn
 from ..types import Action, Diff, ReconcilerError
 from ..validation import DEFAULT_ORG_ROLE
 
 COMPARABLE = ["organization_alias", "models"]
+
+# Since LiteLLM v1.102.0 the ENTIRE /organization router is wrapped with a
+# dependency that gates it on an Enterprise license; on unlicensed
+# self-hosted proxies every /organization/* call answers HTTP 403 with a body
+# like "Organizations are only available for LiteLLM Enterprise users", and
+# LiteLLMClient._request embeds that body verbatim in the ReconcilerError
+# text. Tolerance requires EVERY marker below (case-insensitive) in the error
+# text — a plain 401, a 500, or a 403 with a different body must never be
+# swallowed as the gate (see tests/test_org_gate.py).
+ORG_GATE_MARKERS = ("403", "enterprise")
+
+
+def is_org_gate_error(exc: ReconcilerError) -> bool:
+    """True only when the error text carries every enterprise-gate marker."""
+    text = str(exc).lower()
+    return all(marker in text for marker in ORG_GATE_MARKERS)
+
+
+def _list_organizations_tolerating_gate(
+    client: LiteLLMClient,
+) -> list[dict[str, Any]] | None:
+    """list_organizations(), or None when the proxy 403'd the enterprise gate.
+
+    Any other ReconcilerError (401, 500, a 403 without the gate body, ...)
+    propagates unchanged.
+    """
+    try:
+        return client.list_organizations()
+    except ReconcilerError as exc:
+        if is_org_gate_error(exc):
+            return None
+        raise
 
 
 def reconcile_organizations(
@@ -38,10 +71,30 @@ def reconcile_organizations(
 
     `reconciled_org_specs` lets `reconcile_org_members` find the remote
     organization_id after a create, without re-listing.
+
+    LiteLLM Enterprise gate: on unlicensed proxies (>=1.102.0) every
+    /organization/* call 403s. With no organizations declared the gate is
+    tolerated (empty list, stderr warning); with organizations declared the
+    reconciliation cannot converge and an actionable error is raised.
     """
     diffs: list[Diff] = []
     reconciled: list[dict[str, Any]] = []
-    live = client.list_organizations()
+    live = _list_organizations_tolerating_gate(client)
+    if live is None:
+        if spec_entries:
+            raise ReconcilerError(
+                f"spec declares {len(spec_entries)} organization(s), but this "
+                "proxy refuses /organization endpoints (LiteLLM Enterprise "
+                "license required). License the proxy, pin an older LiteLLM, "
+                "or drop organizations from the spec."
+            )
+        warn(
+            "litellm-as-code",
+            "organization management skipped: this proxy only exposes "
+            "/organization endpoints with a LiteLLM Enterprise license; "
+            "continuing without organizations",
+        )
+        return [], []
 
     for entry in spec_entries:
         org_id = entry.get("organization_id")
@@ -58,7 +111,11 @@ def reconcile_organizations(
                 }
                 created = client.create_organization(create_payload)
                 created_id = created.get("organization_id")
-                live = client.list_organizations()  # refresh
+                # Same gate tolerance as the initial listing: if the refresh
+                # ever 403'd the gate, `live` would read empty and "live is
+                # empty" unresolves the id below — a hard error, never a
+                # silent member drop.
+                live = _list_organizations_tolerating_gate(client) or []
                 remote_org_id = _remote_org_id_from_live(live, entry, created_id)
                 if not remote_org_id:
                     # The organization was created but its remote id cannot be
@@ -117,6 +174,12 @@ def reconcile_org_members(
     `members`), so no per-org info round-trip is needed.
     """
     diffs: list[Diff] = []
+    if not org_specs:
+        # Nothing spec-owned to reconcile: skip the /organization/list
+        # round-trip entirely — required so the enterprise-gate degradation
+        # path above (gate hit with an org-free spec) can hand back empty
+        # org_specs without this stage re-hitting the gated endpoint.
+        return diffs
     live_by_id = {o.get("organization_id"): o for o in client.list_organizations()}
 
     for org in org_specs:
