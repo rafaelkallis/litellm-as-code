@@ -30,6 +30,13 @@ proxy state afterwards, and asserts:
 NOTE: two specs (variant B vs D) assert conflicting values on the SAME
 identifiers, so they cannot both run against one proxy in one CI job; they
 are exported as independent named specs instead.
+
+Variants A, B and C (and the mutation round, which converges variant C's
+spec) are skipped unless their LITELLM_RUN_VARIANT_<X>=1 flag is set: they
+assert enterprise-gated capabilities (team-admin member roles always; whole
+organization management on unlicensed proxies from LiteLLM 1.102 on), so
+the multi-version matrix (scripts/compat_matrix.py) and unlicensed local
+stacks deliberately run without them.
 """
 
 from __future__ import annotations
@@ -58,20 +65,51 @@ pytestmark = [
 
 SPECS = {
     # (spec filename, expected converged resource count)
+    # a asserts a team-admin member role AND organization management — both
+    # enterprise-gated on unlicensed proxies from LiteLLM 1.102 on.
     "a": ("spec-variant-a.yml", 11),
+    # c is the full-field matrix, but it declares organizations (alias-only);
+    # a spec with `organizations:` cannot converge on unlicensed proxies from
+    # LiteLLM 1.102 on, so it is gated like variant B.
     "c": ("spec-variant-c.yml", 9),
     # variant-b declares an enterprise-gated team admin on self-hosted
     # proxies; enabled only when LITELLM_RUN_VARIANT_B=1 (CI sets it when it
     # runs with an LRU/enterprise-capable proxy).
     "b": ("spec-variant-b.yml", 10),
+    # e is variant C minus the org section (and minus the inherit reference
+    # into variant A's policy): the org-free full-field matrix that runs on
+    # EVERY leg of scripts/compat_matrix.py, licensed or not. 8 unchanged
+    # rows (budget, model, credential, user, team, key, guardrail, policy);
+    # the converged team member reports no delta of its own.
+    "e": ("spec-variant-e.yml", 8),
 }
 
-# variant-b is enterprise-gated on OSS LiteLLM -> skipped by default
+# Enterprise-gated variants are skipped by default; each opts in via its
+# LITELLM_RUN_VARIANT_<X>=1 flag (see tests/live/README.md; the compat-matrix
+# runner deliberately runs without them on unlicensed proxy versions).
+RUN_VARIANT_A = os.environ.get("LITELLM_RUN_VARIANT_A") == "1"
 RUN_VARIANT_B = os.environ.get("LITELLM_RUN_VARIANT_B") == "1"
-SKIP_VARIANT_B = pytest.mark.skipif(
-    not RUN_VARIANT_B,
-    reason="variant B asserts a team-admin role (enterprise-only on OSS LiteLLM); set LITELLM_RUN_VARIANT_B=1 to include it",
-)
+RUN_VARIANT_C = os.environ.get("LITELLM_RUN_VARIANT_C") == "1"
+
+VARIANT_GATES: dict[str, tuple[bool, str]] = {
+    "a": (
+        RUN_VARIANT_A,
+        "variant A asserts a team-admin role AND organization management — "
+        "enterprise-gated on unlicensed proxies from LiteLLM 1.102 on; set "
+        "LITELLM_RUN_VARIANT_A=1 to include it",
+    ),
+    "b": (
+        RUN_VARIANT_B,
+        "variant B asserts a team-admin role (enterprise-only on OSS "
+        "LiteLLM); set LITELLM_RUN_VARIANT_B=1 to include it",
+    ),
+    "c": (
+        RUN_VARIANT_C,
+        "variant C declares organization management — enterprise-gated on "
+        "unlicensed proxies from LiteLLM 1.102 on; set LITELLM_RUN_VARIANT_C=1 "
+        "to include it",
+    ),
+}
 
 
 def _run_cli(*args: str) -> subprocess.CompletedProcess:
@@ -96,10 +134,12 @@ def proxy():
     return BASE_URL
 
 
-@pytest.mark.parametrize("name", ["a", "b", "c"])
+@pytest.mark.parametrize("name", ["a", "b", "c", "e"])
 def test_variant_converges_and_is_idempotent(proxy, name, tmp_path):
-    if name == "b" and not RUN_VARIANT_B:
-        pytest.skip("variant B asserts a team-admin role (enterprise-only); set LITELLM_RUN_VARIANT_B=1")
+    if name in VARIANT_GATES:
+        enabled, reason = VARIANT_GATES[name]
+        if not enabled:
+            pytest.skip(reason)
     spec_file, expected_ok = SPECS[name]
     spec_path = LIVE_DIR / spec_file
 
@@ -125,6 +165,14 @@ def test_variant_converges_and_is_idempotent(proxy, name, tmp_path):
     assert dry.returncode == 0, dry.stdout or dry.stderr
 
 
+# The mutation round converges spec-variant-c.yml, which declares
+# organizations — enterprise-gated on unlicensed proxies from LiteLLM 1.102
+# on, so it is skipped by default alongside variant C.
+@pytest.mark.skipif(
+    not RUN_VARIANT_C,
+    reason="mutation round converges spec-variant-c, which declares organization management — "
+    "enterprise-gated on unlicensed proxies from LiteLLM 1.102 on; set LITELLM_RUN_VARIANT_C=1 to include it",
+)
 def test_mutation_round_converges(proxy, tmp_path):
     """Applied twice on a converged base, a mutation (policy drift +
     member role change) must converge to a new stable state."""

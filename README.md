@@ -413,8 +413,39 @@ endpoints (see `AGENTS.md` §9). The local Compose example and the container
 publish workflow still default to `latest`.
 This suite is a **hard quality gate for publishing**: the `publish` job in
 `.github/workflows/publish-image.yml` runs only after both the mock-only unit
-suite and the live integration suite pass (variants A/C + the mutation round,
-plus the documented example spec as a slow test).
+suite and the live integration suite pass (on the pinned proxy; the
+enterprise-gated variants and the mutation round are skipped unless their
+`LITELLM_RUN_VARIANT_*` flag is set — see `tests/live/README.md` — plus the
+documented example spec as a slow test).
+
+### Testing against multiple LiteLLM versions
+
+LiteLLM's admin API is only loosely coupled to semver (`AGENTS.md` §9), so a
+single pinned release gate is not enough. `scripts/compat_matrix.py` boots the
+test-owned compose stack once per LiteLLM version, waits for the healthcheck,
+runs the live suite against it, tears it down again and prints a pass/fail
+matrix:
+
+```bash
+python scripts/compat_matrix.py          # default: v1.97.0, v1.104.2
+```
+
+`--versions` takes a comma- or space-separated tag list; it also accepts
+`--port`, `--keep` (leave the last stack up for debugging), `--fail-fast`,
+`--pytest-args "..."` and `--set K=V` (extra env, forwarded to both the stack
+and pytest). It exits non-zero unless **every** version is green.
+`.github/workflows/compat-matrix.yml` runs the same harness for `v1.97.0` and
+`v1.104.2` on PRs, pushes to `main` and on demand (one job per version; not a
+release gate).
+
+Caveats: variants A/B/C and the mutation round are skipped in the matrix —
+they assert enterprise-gated capabilities (team-admin member roles
+everywhere; whole organization management on unlicensed proxies from
+LiteLLM 1.102 on). Variant E (an org-free mirror of variant C) always runs,
+licensed or not. On unlicensed proxies >= 1.102, org-free specs converge
+(the `/organization` 403 is tolerated with a warning) while specs declaring
+`organizations:` cannot; per-deployment model costs are not persisted there,
+so cost-only drift is accepted with a warning.
 
 See `AGENTS.md` for the full contributor guide, scope boundaries, and API
 quirks reference.

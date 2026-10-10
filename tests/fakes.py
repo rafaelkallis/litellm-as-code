@@ -32,6 +32,14 @@ class FakeLiteLLM:
         self.policies: dict[str, dict[str, Any]] = {}  # name -> policy obj
         self.policy_ids: dict[str, str] = {}  # name -> policy_id
         self.policy_drafts: set[str] = set()  # names whose live version is draft
+        # Mirror LiteLLM >= 1.102 (SERVER_DERIVED_PRICING): silently drop the
+        # per-deployment cost keys on PATCH — /model/info reads them back as
+        # null. Default False mirrors the pinned v1.97.0 generation.
+        self.drop_model_costs = False
+        # Version reported by client.proxy_version() (GET /openapi.json probe).
+        # Default mirrors the pinned v1.97.0 generation (costs persist); None
+        # simulates a proxy whose OpenAPI docs are disabled (probe unknown).
+        self.proxy_version: tuple[int, ...] | None = (1, 97, 0)
 
     # -- wire up to LiteLLMClient via monkeypatched session --
     def attach(self, client: LiteLLMClient) -> None:
@@ -59,6 +67,7 @@ class FakeLiteLLM:
         client.get_credential_by_name = self._credential_by_name  # type: ignore[method-assign]
 
         client.list_models = lambda: list(self.models.values())  # type: ignore[method-assign]
+        client.proxy_version = lambda: self.proxy_version  # type: ignore[method-assign]
         client.create_model = self._create_model  # type: ignore[method-assign]
         client.patch_model = self._patch_model  # type: ignore[method-assign]
 
@@ -199,7 +208,15 @@ class FakeLiteLLM:
     def _patch_model(self, model_id, payload):  # type: ignore[no-untyped-def]
         for m in self.models.values():
             if (m.get("model_info") or {}).get("id") == model_id:
-                m.update(self._normalize_model(payload))
+                normalized = self._normalize_model(payload)
+                if self.drop_model_costs:
+                    # Mirrors LiteLLM >= 1.102 (upstream 76cb0fec1 +
+                    # 42541a923/5d3d99eb9): per-deployment costs are NOT
+                    # persisted; /model/info reads them back as null.
+                    for key in ("input_cost_per_token", "output_cost_per_token"):
+                        (normalized.get("litellm_params") or {}).pop(key, None)
+                        (normalized.get("model_info") or {}).pop(key, None)
+                m.update(normalized)
                 return {}
         return {}
 

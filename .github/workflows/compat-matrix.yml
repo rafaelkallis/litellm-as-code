@@ -1,0 +1,52 @@
+# Multi-version LiteLLM compatibility matrix (AGENTS.md §9).
+#
+# litellm's admin API is not semver-guaranteed; the release gate
+# (publish-image.yml / publish-pypi.yml) pins one version (v1.97.0), while
+# this workflow re-probes the live integration suite against each pinned
+# matrix version via scripts/compat_matrix.py — which boots the test-owned
+# compose stack (tests/live/proxy), waits for the healthcheck, runs
+# `pytest tests/live -m "integration and not slow" -q`, tears the stack down
+# and moves on. A red leg means litellm-as-code does not yet reconcile
+# against that proxy version; it is informational, not a release gate.
+name: LiteLLM compat matrix
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compat-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live-suite:
+    name: Live suite against LiteLLM ${{ matrix.litellm-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        litellm-version: [v1.97.0, v1.104.2]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install (editable + dev extras)
+        run: pip install -e ".[dev]"
+
+      # docker + the compose plugin are preinstalled on ubuntu-latest runners.
+      - name: Run compat matrix leg
+        run: >-
+          python scripts/compat_matrix.py
+          --versions ${{ matrix.litellm-version }}
+          --port 4001

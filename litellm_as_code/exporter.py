@@ -40,8 +40,10 @@ import yaml
 
 from .api import LiteLLMClient
 from .log import warn
+from .resources.organizations import is_org_gate_error
 from .secrets import split_masked
 from .spec import load_spec
+from .types import ReconcilerError
 
 # Sections in reconcile order; the exporter emits exactly these, omitting any
 # that are empty so a fresh proxy exports a minimal spec.
@@ -243,7 +245,24 @@ _ORG_KEYS = ["organization_id", "organization_alias", "models"]
 
 def _export_organizations(client: LiteLLMClient) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
-    for o in client.list_organizations():
+    try:
+        live = client.list_organizations()
+    except ReconcilerError as e:
+        # Same tolerance as the reconcile side: on unlicensed proxies from
+        # LiteLLM 1.102 on the whole /organization router is enterprise-gated
+        # and 403s. Export degrades to an organizations-less spec with a
+        # warning instead of failing outright (the reconciliation docs/rules
+        # about which specs still converge are identical there).
+        if is_org_gate_error(e):
+            warn(
+                "litellm-as-code",
+                "organization export skipped: this proxy refuses /organization "
+                "endpoints (LiteLLM Enterprise license required); the exported "
+                "spec has no organizations section",
+            )
+            return out
+        raise
+    for o in live:
         org_id = o.get("organization_id")
         if not org_id:
             _emit_warn("organizations", str(org_id), "skipping row without organization_id")
