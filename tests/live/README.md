@@ -26,6 +26,20 @@ uv run pytest tests/live -m 'integration and not slow' -v   # variants + mutatio
 uv run pytest tests/live -m slow -v                          # documented example
 ```
 
+Or run the whole thing as a **multi-version compatibility matrix** — the
+harness (`scripts/compat_matrix.py`) boots this same stack once per LiteLLM
+version, waits for the healthcheck, runs the live suite against it, tears it
+down again and prints a pass/fail matrix (default versions:
+`v1.97.0,v1.104.2`; CI runs the same harness per version, see
+`.github/workflows/compat-matrix.yml`):
+
+```bash
+python scripts/compat_matrix.py                    # full default matrix
+python scripts/compat_matrix.py --versions v1.104.2 --port 4001 --keep
+```
+
+(`--help` for `--port`, `--keep`, `--fail-fast`, `--pytest-args`, `--set`.)
+
 Or drive the CLI manually (plan first — exit 2 on diff like terraform plan —
 then apply twice):
 
@@ -48,6 +62,7 @@ subsequent `--dry-run` exits `0`.
 | `spec-variant-a.yml` | Fresh resources with alternate identity styles: no `user_email`/`auto_create_key` on a user, alias-only team, server-minted key (no caller-supplied `key`), explicit empty lists (`models: []`, `allowed_routes: []`), budget without `budget_duration`, **non-zero** per-million model costs, org with members, guardrail with `guardrail_info`, policy with only `guardrails_remove`. |
 | `spec-variant-b.yml` | Fixed `team_id` + explicit budgets, team-bound key with non-empty `models`/`allowed_routes`, user with `auto_create_key: true`, tpm/rpm-limited budget, tier'd chat model, org **without** members, policy with `inherit`, credential **binding a model** via `model_id`. |
 | `spec-variant-c.yml` | Every optional field expressed explicitly (full field matrix), per-token cost convention in `model_info`, alias-only org, policy with both `guardrails_add` + `guardrails_remove`. Team member role is `user` (not `admin`) so it re-converges on OSS proxies. |
+| `spec-variant-e.yml` | **Org-free mirror of variant C** — variant C minus the `organizations:` section (and minus the policy's `inherit` reference into variant A's policy). Runs on EVERY leg of `scripts/compat_matrix.py`, licensed or not; the export roundtrip in `test_live_export.py` converges it. Shares variant C's identifiers. |
 | `spec-variant-d.yml` | **Mutation round**: renames (team/user/org aliases), `user_role` change, team member role change, member addition, key `allowed_routes` change, budget value changes, model cost flip + `base_model` change, credential provider change, policy drift (triggers recreate). Intentionally conflicts with `spec-variant-b` on shared resources — do not apply both in one run. |
 
 ## Server capability caveats (found live, not reconciler bugs)
@@ -55,6 +70,15 @@ subsequent `--dry-run` exits `0`.
 - Team member role `admin` is **enterprise-only** on self-hosted LiteLLM
   (`Assigning team admins is a premium feature`). For OSS/self-hosted, use
   role `user` in `members_with_roles`.
+- **Variants A, B and C (plus the mutation round, which converges
+  `spec-variant-c.yml`) are skipped by default** — they assert
+  enterprise-gated capabilities (team-admin member roles everywhere; whole
+  organization management on unlicensed proxies from LiteLLM 1.102 on, so
+  any spec declaring `organizations:` cannot converge there). Set
+  `LITELLM_RUN_VARIANT_A=1` / `LITELLM_RUN_VARIANT_B=1` /
+  `LITELLM_RUN_VARIANT_C=1` on a licensed proxy to include them.
+  **Variant E is the org-free baseline that always runs** (licensed or not).
+  `test_live_export.py`'s export roundtrip converges it for the same reason.
 - `model_info.tier` is an API enum — only `free` | `paid` (validation rejects
   other values at spec load).
 - These specs assert a *desired* state; if two specs manage the same
