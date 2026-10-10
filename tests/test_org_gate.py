@@ -122,3 +122,25 @@ def test_server_error_reraises(tmp_path):
 
     assert "500" in str(excinfo.value)
     assert "spec declares" not in str(excinfo.value)
+
+
+def test_export_tolerates_gate_and_exports_orgless(capsys):
+    """export degrades like reconcile: gate 403 -> organizations-less spec +
+    a warning instead of failing outright."""
+    from litellm_as_code.exporter import build_spec
+
+    client, _fake = _gate_client(GATE_TEXT)
+    spec = build_spec(client)
+    assert spec.get("organizations", []) == []
+    assert "organization export skipped" in capsys.readouterr().err
+
+
+def test_export_re_raises_non_gate_org_errors():
+    """A 5xx on /organization/list fails export loudly (never 'the gate')."""
+    from litellm_as_code.exporter import build_spec
+
+    client, _fake = _gate_client(
+        "GET /organization/list failed: 500 Server Error: Internal Server Error"
+    )
+    with pytest.raises(ReconcilerError):
+        build_spec(client)

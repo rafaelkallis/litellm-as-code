@@ -78,8 +78,10 @@ SPECS = {
     "b": ("spec-variant-b.yml", 10),
     # e is variant C minus the org section (and minus the inherit reference
     # into variant A's policy): the org-free full-field matrix that runs on
-    # EVERY leg of scripts/compat_matrix.py, licensed or not.
-    "e": ("spec-variant-e.yml", 9),
+    # EVERY leg of scripts/compat_matrix.py, licensed or not. 8 unchanged
+    # rows (budget, model, credential, user, team, key, guardrail, policy);
+    # the converged team member reports no delta of its own.
+    "e": ("spec-variant-e.yml", 8),
 }
 
 # Enterprise-gated variants are skipped by default; each opts in via its
