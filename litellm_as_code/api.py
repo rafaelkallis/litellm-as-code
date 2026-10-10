@@ -19,6 +19,10 @@ import requests
 
 from .types import ReconcilerError
 
+# Sentinel for proxy_version(): distinguishes "not probed yet" from an
+# unparseable/missing version (which caches as None).
+_PROBE_PENDING = object()
+
 
 class LiteLLMClient:
     def __init__(
@@ -43,6 +47,7 @@ class LiteLLMClient:
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
+        self._proxy_version_cache: Any = _PROBE_PENDING
 
     def _url(self, path: str) -> str:
         return urljoin(self.base_url, path.lstrip("/"))
@@ -93,10 +98,97 @@ class LiteLLMClient:
                 return payload
             cur = cur[k]
         return cur if isinstance(cur, dict) else payload
+    def proxy_version(self) -> tuple[int, ...] | None:
+        """Read-only capability probe: the proxy's version as an int tuple.
+
+        FastAPI bakes the proxy version into `GET /openapi.json`'s
+        `info.version` (live-verified: v1.97.0 and v1.104.2 both serve it,
+        e.g. "1.104.2" -> (1, 104, 2)). Deployments may disable the OpenAPI
+        docs (`openapi_url=None`), so callers must treat None as "unknown"
+        and fall back to behavior probing. Cached per client.
+        """
+        if self._proxy_version_cache is not _PROBE_PENDING:
+            return self._proxy_version_cache  # type: ignore[return-value]
+        try:
+            payload = self._request("GET", "/openapi.json")
+            raw = str(payload.get("info", {}).get("version", ""))
+            raw = raw.strip().lstrip("v")
+            digits: list[int] = []
+            for part in raw.split("."):
+                prefix = ""
+                for ch in part:
+                    if ch.isdigit():
+                        prefix += ch
+                    else:
+                        break
+                if prefix:
+                    digits.append(int(prefix))
+                else:
+                    break
+            ver: tuple[int, ...] | None = tuple(digits) or None
+        except Exception:  # noqa: BLE001 — best-effort probe, never fatal
+            ver = None
+        self._proxy_version_cache = ver
+        return ver
+    # -- paginated list reads -------------------------------------------------
+    def _paginated_list(
+        self,
+        path: str,
+        list_key: str,
+        total_key: str,
+        *,
+        base_params: dict[str, Any] | None = None,
+        page_size_param: str = "page_size",
+        page_size: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Collect every page of a paginated GET list endpoint.
+
+        The proxy caps page_size at 100 but silently defaults to 25/10, so a
+        naive single-page read under-reads silently. We request page 1..N with
+        the page-size param pinned to the documented maximum and stop when:
+        a page comes back empty, `total_pages` is missing/0/unparseable (older
+        or odd proxies — a single page is then the whole truth), or we have
+        reached the last page. A hard iteration cap keeps a malformed envelope
+        from looping forever, and a trailing declared-vs-collected count check
+        refuses to silently under-read if the proxy ever shortchanges us.
+        """
+        params = dict(base_params or {})
+        items: list[dict[str, Any]] = []
+        payload: dict[str, Any] = {}
+        max_pages = 10_000
+        page = 1
+        while page <= max_pages:
+            request_params = {
+                **params,
+                "page": page,
+                page_size_param: page_size,
+            }
+            payload = self._request("GET", path, params=request_params)
+            page_items = payload.get(list_key, [])
+            items.extend(page_items)
+            if not page_items:
+                break  # empty page: the proxy says there is nothing more
+            try:
+                total_pages = int(payload["total_pages"])
+            except (KeyError, TypeError, ValueError):
+                break  # legacy/odd proxy: trust the single page we got
+            if total_pages <= 0 or page >= total_pages:
+                break
+            page += 1
+
+        declared = payload.get(total_key)
+        if isinstance(declared, int) and not isinstance(declared, bool):
+            if declared > len(items):
+                raise ReconcilerError(
+                    f"GET {path} returned {len(items)} of {declared} {list_key} "
+                    "after pagination — refusing to silently under-read; "
+                    "check the proxy's pagination behavior"
+                )
+        return items
 
     # -- users --------------------------------------------------------------
     def list_users(self) -> list[dict[str, Any]]:
-        return self._request("GET", "/user/list").get("users", [])
+        return self._paginated_list("/user/list", "users", "total")
 
     def create_user(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/user/new", json=payload)
@@ -109,7 +201,7 @@ class LiteLLMClient:
 
     # -- teams --------------------------------------------------------------
     def list_teams(self) -> list[dict[str, Any]]:
-        return self._request("GET", "/v2/team/list").get("teams", [])
+        return self._paginated_list("/v2/team/list", "teams", "total")
 
     def get_team_info(self, team_id: str, retry: bool = False) -> dict[str, Any]:
         """Full team row incl. `members_with_roles` (GET /team/info -> {team_info}).
@@ -169,9 +261,15 @@ class LiteLLMClient:
 
     # -- virtual keys -------------------------------------------------------
     def list_keys(self) -> list[dict[str, Any]]:
-        return self._request(
-            "GET", "/key/list", params={"return_full_object": "true"}
-        ).get("keys", [])
+        # NOTE: /key/list pagination uses `size` (not `page_size`) — the proxy
+        # ignores a page_size query param entirely on this endpoint.
+        return self._paginated_list(
+            "/key/list",
+            "keys",
+            "total_count",
+            base_params={"return_full_object": "true"},
+            page_size_param="size",
+        )
 
     def generate_key(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/key/generate", json=payload)
