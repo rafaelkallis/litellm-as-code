@@ -98,6 +98,7 @@ class LiteLLMClient:
                 return payload
             cur = cur[k]
         return cur if isinstance(cur, dict) else payload
+
     def proxy_version(self) -> tuple[int, ...] | None:
         """Read-only capability probe: the proxy's version as an int tuple.
 
@@ -130,6 +131,8 @@ class LiteLLMClient:
             ver = None
         self._proxy_version_cache = ver
         return ver
+
+
     # -- paginated list reads -------------------------------------------------
     def _paginated_list(
         self,
@@ -154,7 +157,7 @@ class LiteLLMClient:
         """
         params = dict(base_params or {})
         items: list[dict[str, Any]] = []
-        payload: dict[str, Any] = {}
+        max_declared: int | None = None
         max_pages = 10_000
         page = 1
         while page <= max_pages:
@@ -164,6 +167,13 @@ class LiteLLMClient:
                 page_size_param: page_size,
             }
             payload = self._request("GET", path, params=request_params)
+            # Any page may carry the only honest total. A later page could
+            # omit or mangle it, so remember the LARGEST declaration seen —
+            # a mangled tail page must not be able to hide a shortfall.
+            page_declared = payload.get(total_key)
+            if isinstance(page_declared, int) and not isinstance(page_declared, bool):
+                if max_declared is None or page_declared > max_declared:
+                    max_declared = page_declared
             page_items = payload.get(list_key, [])
             items.extend(page_items)
             if not page_items:
@@ -176,14 +186,12 @@ class LiteLLMClient:
                 break
             page += 1
 
-        declared = payload.get(total_key)
-        if isinstance(declared, int) and not isinstance(declared, bool):
-            if declared > len(items):
-                raise ReconcilerError(
-                    f"GET {path} returned {len(items)} of {declared} {list_key} "
-                    "after pagination — refusing to silently under-read; "
-                    "check the proxy's pagination behavior"
-                )
+        if max_declared is not None and max_declared > len(items):
+            raise ReconcilerError(
+                f"GET {path} returned {len(items)} of {max_declared} {list_key} "
+                "after pagination — refusing to silently under-read; "
+                "check the proxy's pagination behavior"
+            )
         return items
 
     # -- users --------------------------------------------------------------

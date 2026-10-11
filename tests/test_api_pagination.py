@@ -156,3 +156,28 @@ def test_teams_spread_over_2_pages_fully_collected():
     assert [t["team_id"] for t in teams] == [f"t-{i}" for i in range(1, 106)]
     assert [call[2]["page"] for call in script.calls] == [1, 2]
     assert all(call[2]["page_size"] == 100 for call in script.calls)
+
+
+def test_shortfall_caught_when_a_later_page_mangles_the_total():
+    """The refusal must not trust only the LAST page's envelope.
+
+    Page 1 declares total=250; page 2 omits `total` and `total_pages`
+    entirely (an odd-proxy shape). The 150-of-250 under-read must still be
+    refused even though the final envelope declares nothing.
+    """
+    page1 = {
+        "users": [_user(i) for i in range(1, 101)],
+        "total": 250,
+        "page": 1,
+        "page_size": 100,
+        "total_pages": 2,
+    }
+    page2 = {  # mangled: no total, no total_pages
+        "users": [_user(i) for i in range(101, 151)],
+    }
+    script = _ScriptedRequest({("/user/list", 1): page1, ("/user/list", 2): page2})
+
+    with pytest.raises(ReconcilerError) as excinfo:
+        _client_with(script).list_users()
+    assert "150 of 250" in str(excinfo.value)
+    assert len(script.calls) == 2

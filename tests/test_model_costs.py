@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 
 from litellm_as_code.reconciler import reconcile
+from litellm_as_code.resources.models import _costs_persist
 from litellm_as_code.types import Action
 
 from tests import make_fake_client
@@ -326,3 +327,69 @@ def test_version_probe_mixed_drift_reports_only_appliable_deltas(tmp_path):
     diff = _model_diff(plan)
     assert diff.action is Action.NOOP
     assert diff.changes == {}
+
+
+class _VersionStub:
+    """Minimal client double for direct _costs_persist probing."""
+
+    def __init__(self, version):
+        self._version = version
+
+    def proxy_version(self):
+        return self._version
+
+
+def test_costs_persist_version_compare_pads_right():
+    """The >= 1.102 cutoff is a RIGHT-PADDED tuple compare: a truncated probe
+    tuple like "1.102" -> (1, 102) must not read as older-than-1.102."""
+    assert _costs_persist(_VersionStub((1, 101, 9))) is True
+    assert _costs_persist(_VersionStub((1, 101))) is True
+    assert _costs_persist(_VersionStub((1, 102))) is False
+    assert _costs_persist(_VersionStub((1, 102, 0))) is False
+    assert _costs_persist(_VersionStub((1, 104, 2))) is False
+    assert _costs_persist(_VersionStub((1, 104, 2, 1))) is False
+    assert _costs_persist(_VersionStub(None)) is None
+
+
+def test_verification_race_vanished_model_never_accepted(tmp_path):
+    """Fallback-verification race: the row vanishes between PATCH and re-list.
+
+    'Can't verify -> don't accept': the Diff stays an UPDATE with no
+    acceptance message (the next run re-evaluates), instead of silently
+    downgrading a vanished model to a converged NOOP.
+    """
+    client, fake = make_fake_client()
+    spec_path = _write_spec(
+        tmp_path, _spec({"model_name": "openai/gpt-4o", "model_info": {"id": "m9"}})
+    )
+    reconcile(spec_path, client, dry_run=False)  # create, no costs in spec
+    spec_path.write_text(
+        json.dumps(
+            _spec(
+                {
+                    "model_name": "openai/gpt-4o",
+                    "model_info": {"id": "m9", "input_cost_per_million_tokens": 2.0},
+                }
+            )
+        )
+    )
+
+    list_calls = []
+    orig_list = client.list_models
+    def _vanish_on_relist():  # type: ignore[no-untyped-def]
+        list_calls.append(1)
+        return orig_list() if len(list_calls) <= 1 else []
+
+    client.list_models = _vanish_on_relist  # type: ignore[method-assign]
+    patch_calls = []
+    orig_patch = client.patch_model
+    client.patch_model = (  # type: ignore[method-assign]
+        lambda *a, **k: (patch_calls.append(a), orig_patch(*a, **k))[1]
+    )
+
+    plan = reconcile(spec_path, client, dry_run=False)
+    diff = _model_diff(plan)
+    assert diff.action is Action.UPDATE  # NOT accepted as converged
+    assert diff.message == ""  # no SERVER_DERIVED_PRICING graft
+    assert len(patch_calls) == 1  # the cost PATCH was still sent (harmless)
+    assert len(list_calls) == 2  # initial read + verification re-list

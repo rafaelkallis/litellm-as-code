@@ -413,10 +413,12 @@ endpoints (see `AGENTS.md` §9). The local Compose example and the container
 publish workflow still default to `latest`.
 This suite is a **hard quality gate for publishing**: the `publish` job in
 `.github/workflows/publish-image.yml` runs only after both the mock-only unit
-suite and the live integration suite pass (on the pinned proxy; the
-enterprise-gated variants and the mutation round are skipped unless their
-`LITELLM_RUN_VARIANT_*` flag is set — see `tests/live/README.md` — plus the
-documented example spec as a slow test).
+suite and the live integration suite pass (on the pinned proxy). Variant C is
+always included there (`LITELLM_RUN_VARIANT_C=1`: on the pinned v1.97.0 proxy
+variant C and the mutation round converge unlicensed — the `/organization`
+gate starts at 1.102); the remaining enterprise-gated variants are skipped
+unless their `LITELLM_RUN_VARIANT_*` flag is set — see `tests/live/README.md`
+— plus the documented example spec as a slow test).
 
 ### Testing against multiple LiteLLM versions
 

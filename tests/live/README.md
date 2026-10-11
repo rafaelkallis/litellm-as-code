@@ -77,6 +77,10 @@ subsequent `--dry-run` exits `0`.
   any spec declaring `organizations:` cannot converge there). Set
   `LITELLM_RUN_VARIANT_A=1` / `LITELLM_RUN_VARIANT_B=1` /
   `LITELLM_RUN_VARIANT_C=1` on a licensed proxy to include them.
+  **The publish workflows set only `LITELLM_RUN_VARIANT_C=1`**: on their
+  pinned v1.97.0 proxy, variant C (team role `user`, org management without
+  the >= 1.102 gate) and the mutation round converge unlicensed, so the
+  release gate keeps full-field + policy-drift coverage.
   **Variant E is the org-free baseline that always runs** (licensed or not).
   `test_live_export.py`'s export roundtrip converges it for the same reason.
 - `model_info.tier` is an API enum — only `free` | `paid` (validation rejects

@@ -73,8 +73,8 @@ SPECS = {
     # LiteLLM 1.102 on, so it is gated like variant B.
     "c": ("spec-variant-c.yml", 9),
     # variant-b declares an enterprise-gated team admin on self-hosted
-    # proxies; enabled only when LITELLM_RUN_VARIANT_B=1 (CI sets it when it
-    # runs with an LRU/enterprise-capable proxy).
+    # proxies; no CI job sets LITELLM_RUN_VARIANT_B=1 today — enable it
+    # manually against an enterprise-capable proxy.
     "b": ("spec-variant-b.yml", 10),
     # e is variant C minus the org section (and minus the inherit reference
     # into variant A's policy): the org-free full-field matrix that runs on
@@ -85,8 +85,11 @@ SPECS = {
 }
 
 # Enterprise-gated variants are skipped by default; each opts in via its
-# LITELLM_RUN_VARIANT_<X>=1 flag (see tests/live/README.md; the compat-matrix
-# runner deliberately runs without them on unlicensed proxy versions).
+# LITELLM_RUN_VARIANT_<X>=1 flag (see tests/live/README.md). CI sets only C:
+# the publish workflows' pinned v1.97.0 gate (no /organization gate before
+# 1.102 and variant C's team role is `user`, so it converges); the
+# compat-matrix runner deliberately runs without A/B/C on unlicensed proxy
+# versions.
 RUN_VARIANT_A = os.environ.get("LITELLM_RUN_VARIANT_A") == "1"
 RUN_VARIANT_B = os.environ.get("LITELLM_RUN_VARIANT_B") == "1"
 RUN_VARIANT_C = os.environ.get("LITELLM_RUN_VARIANT_C") == "1"

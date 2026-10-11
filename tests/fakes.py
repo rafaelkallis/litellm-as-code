@@ -66,6 +66,10 @@ class FakeLiteLLM:
         client.patch_credential = self._patch_credential  # type: ignore[method-assign]
         client.get_credential_by_name = self._credential_by_name  # type: ignore[method-assign]
 
+        # Plain in-memory list — deliberately NOT routed through the client's
+        # _paginated_list: resource code sees a non-paginated read; client-level
+        # pagination is exercised by tests/test_api_pagination.py and the live
+        # compat-matrix legs.
         client.list_models = lambda: list(self.models.values())  # type: ignore[method-assign]
         client.proxy_version = lambda: self.proxy_version  # type: ignore[method-assign]
         client.create_model = self._create_model  # type: ignore[method-assign]

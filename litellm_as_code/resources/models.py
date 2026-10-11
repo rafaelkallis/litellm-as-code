@@ -68,7 +68,9 @@ def _costs_persist(client: LiteLLMClient) -> bool | None:
     version = client.proxy_version()
     if not isinstance(version, tuple):  # None (probe unavailable) or malformed
         return None
-    return version < (1, 102, 0)
+    # Pad RIGHT so a truncated probe ("1.102" -> (1, 102)) is not element-wise
+    # compared as OLDER than 1.102 (shortest tuple wins that comparison).
+    return version + (0,) * (3 - len(version)) < (1, 102, 0)
 
 
 def _resolve_model_id(remote: dict[str, Any]) -> str | None:
@@ -232,8 +234,12 @@ def reconcile_models(
                 # when the ONLY drift left is the two cost keys, the PATCH may
                 # be a no-op server-side (dead PATCH is harmless on both
                 # generations — v1.97 persists, >= 1.102 drops), so remember
-                # it for the post-apply verification below. Desired values
-                # come from the spec entry (`want`, per-token). A model with
+                # it for the post-apply verification below. The PATCH body is
+                # the spec entry verbatim (`entry`), so it may still carry the
+                # cost keys the change set dropped — harmless either way
+                # (>= 1.102 drops them server-side; <= 1.101 re-persists the
+                # same values). Desired values come from the spec entry
+                # (`want`, per-token). A model with
                 # ANY non-cost drift is deliberately NOT tracked: a non-cost
                 # change must never be swallowed by the acceptance phase.
                 if set(changes) <= set(_COST_KEYS):
@@ -264,10 +270,15 @@ def reconcile_models(
         accepted = 0
         for diff, want in cost_only_patched:  # per-model acceptance
             remote_after = live_after.get(diff.name)
+            if remote_after is None:
+                # Race: the row vanished between the PATCH and the re-list.
+                # Verification is impossible, and "can't verify" means "don't
+                # accept": leave the Diff untouched (still an update) — the
+                # next run re-evaluates the drift against whatever is live.
+                continue
             # Costs "stuck" iff EVERY drifted cost key is now present on live
             # (a per-million echo still counts as present — the same helpers).
-            # A missing model (deleted underneath us) keeps its Diff untouched.
-            stuck = remote_after is not None and all(
+            stuck = all(
                 _desired_cost_on_live(k, want[k], _comparable_model(remote_after))
                 for k in diff.changes
             )
