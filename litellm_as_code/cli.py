@@ -38,6 +38,20 @@ def _add_quiet_flag(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_connection_args(p: argparse.ArgumentParser) -> None:
+    """Add the shared connection flags (env aliases verbatim in --help)."""
+    p.add_argument(
+        "--base-url",
+        default=os.environ.get("LITELLM_BASE_URL") or os.environ.get("BASE_URL"),
+        help="LiteLLM proxy base URL (env: LITELLM_BASE_URL / BASE_URL)",
+    )
+    p.add_argument(
+        "--api-key",
+        default=os.environ.get("LITELLM_API_KEY") or os.environ.get("API_KEY"),
+        help="admin API key (env: LITELLM_API_KEY / API_KEY)",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     # allow_abbrev=False: argparse would otherwise accept unambiguous prefixes
     # (--q for --quiet, --ver for --version, ...) which the notice pre-scan
@@ -57,16 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("LITELLM_SPEC", "spec.yml"),
         help="path to the declarative YAML spec (env: LITELLM_SPEC)",
     )
-    p.add_argument(
-        "--base-url",
-        default=os.environ.get("LITELLM_BASE_URL") or os.environ.get("BASE_URL"),
-        help="LiteLLM proxy base URL (env: LITELLM_BASE_URL / BASE_URL)",
-    )
-    p.add_argument(
-        "--api-key",
-        default=os.environ.get("LITELLM_API_KEY") or os.environ.get("API_KEY"),
-        help="admin API key (env: LITELLM_API_KEY / API_KEY)",
-    )
+    _add_connection_args(p)
     p.add_argument(
         "--dry-run",
         action="store_true",
@@ -100,16 +105,7 @@ def build_export_parser() -> argparse.ArgumentParser:
         default=os.environ.get("LITELLM_SPEC", "spec.yml"),
         help="path to write the exported spec (env: LITELLM_SPEC, default spec.yml)",
     )
-    p.add_argument(
-        "--base-url",
-        default=os.environ.get("LITELLM_BASE_URL") or os.environ.get("BASE_URL"),
-        help="LiteLLM proxy base URL (env: LITELLM_BASE_URL / BASE_URL)",
-    )
-    p.add_argument(
-        "--api-key",
-        default=os.environ.get("LITELLM_API_KEY") or os.environ.get("API_KEY"),
-        help="admin API key (env: LITELLM_API_KEY / API_KEY)",
-    )
+    _add_connection_args(p)
     return p
 
 

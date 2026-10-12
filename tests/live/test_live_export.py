@@ -11,7 +11,8 @@ Also asserts the export's fidelity invariants against a real proxy:
   - model costs are exported back per-million.
 
 Skipped unless LITELLM_BASE_URL + LITELLM_API_KEY are set (same gate as
-test_live_proxy.py).
+test_live_proxy.py). The roundtrip converges the org-free variant E so it
+runs on every compat-matrix leg (see spec-variant-e.yml).
 """
 
 from __future__ import annotations
@@ -56,7 +57,10 @@ def _run_cli(*args: str) -> subprocess.CompletedProcess:
 def test_export_then_reapply_is_noop(tmp_path):
     """Converge a spec, export the live proxy, then re-apply the export: the
     second apply must be a no-op and its dry-run must exit 0."""
-    source_spec = LIVE_DIR / "spec-variant-c.yml"
+    # org-free variant E so the roundtrip runs on every compat-matrix leg
+    # (a spec with `organizations:` cannot converge on unlicensed proxies
+    # from LiteLLM 1.102 on).
+    source_spec = LIVE_DIR / "spec-variant-e.yml"
 
     # 1) converge the source spec (self-healing like test_live_proxy)
     apply1 = _run_cli(str(source_spec))

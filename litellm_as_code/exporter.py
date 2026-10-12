@@ -40,8 +40,10 @@ import yaml
 
 from .api import LiteLLMClient
 from .log import warn
+from .resources.organizations import is_org_gate_error
 from .secrets import split_masked
 from .spec import load_spec
+from .types import ReconcilerError
 
 # Sections in reconcile order; the exporter emits exactly these, omitting any
 # that are empty so a fresh proxy exports a minimal spec.
@@ -243,7 +245,24 @@ _ORG_KEYS = ["organization_id", "organization_alias", "models"]
 
 def _export_organizations(client: LiteLLMClient) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
-    for o in client.list_organizations():
+    try:
+        live = client.list_organizations()
+    except ReconcilerError as e:
+        # Same tolerance as the reconcile side: on unlicensed proxies from
+        # LiteLLM 1.102 on the whole /organization router is enterprise-gated
+        # and 403s. Export degrades to an organizations-less spec with a
+        # warning instead of failing outright (the reconciliation docs/rules
+        # about which specs still converge are identical there).
+        if is_org_gate_error(e):
+            warn(
+                "litellm-as-code",
+                "organization export skipped: this proxy refuses /organization "
+                "endpoints (LiteLLM Enterprise license required); the exported "
+                "spec has no organizations section",
+            )
+            return out
+        raise
+    for o in live:
         org_id = o.get("organization_id")
         if not org_id:
             _emit_warn("organizations", str(org_id), "skipping row without organization_id")
@@ -355,11 +374,41 @@ def _export_keys(client: LiteLLMClient) -> list[dict[str, Any]]:
 
 _GUARDRAIL_KEYS = ["guardrail_name", "litellm_params", "guardrail_info"]
 
-# `litellm_params` may carry write-once secrets (api_key, headers, ...);
-# `guardrail_info` is diffed per key over its NON-SECRET subset in
+# litellm_params may carry write-once secrets (api_key, headers, ...);
+# guardrail_info is diffed per key over its NON-SECRET subset in
 # resources/guardrails.py (masked entries carry no drift signal) — see
 # secrets.py for the shared detection rules (moved there so the export and
 # the reconcilers cannot drift apart, issue #11).
+
+
+def _strip_masked_map(entry: dict[str, Any], field: str, name: str) -> None:
+    """Strip masked entries from a dict-shaped map of `entry`, in place.
+
+    Kept entries replace the map outright; a fully-stripped map is removed
+    entirely (the spec omits it — exactly what `guardrails.py` expects when
+    nothing re-asserts); every stripped path WARNs (write-once — never
+    re-exported, the operator fills them in manually). A masker echo (e.g.
+    `"abcd***"`) landing in the spec would both mislead the operator and, if
+    re-applied verbatim, be treated as desired state. Non-dict payloads stay
+    opaque/untouched. `guardrails.py` diffs guardrail_info over its
+    NON-SECRET subset, and the two sides share secrets.py so their masked
+    shapes cannot drift apart (issue #11).
+    """
+    value = entry.get(field)
+    if not isinstance(value, dict):
+        return
+    filtered, masked = _strip_masked_params(value)
+    if filtered:
+        entry[field] = filtered
+    elif field in entry:
+        del entry[field]
+    if masked:
+        _emit_warn(
+            "guardrails",
+            name,
+            f"masked {field} value(s) {sorted(masked)} are not exported; "
+            "fill them in manually (write-once)",
+        )
 
 
 def _export_guardrails(client: LiteLLMClient) -> list[dict[str, Any]]:
@@ -374,40 +423,8 @@ def _export_guardrails(client: LiteLLMClient) -> list[dict[str, Any]]:
             _emit_warn("guardrails", str(name), "skipping row without guardrail_name")
             continue
         entry = _pick(g, _GUARDRAIL_KEYS)
-        params = entry.get("litellm_params") or {}
-        if isinstance(params, dict):
-            filtered, masked = _strip_masked_params(params)
-            if filtered:
-                entry["litellm_params"] = filtered
-            elif "litellm_params" in entry:
-                del entry["litellm_params"]
-            if masked:
-                _emit_warn(
-                    "guardrails",
-                    name,
-                    f"masked litellm_params value(s) {sorted(masked)} are not "
-                    "exported; fill them in manually (write-once)",
-                )
-        # guardrail_info is diffed per key over its NON-SECRET subset in
-        # resources/guardrails.py, so the exporter strips the same shape of
-        # masked entries here — the two sides share secrets.py and must stay
-        # in lockstep. A masker echo (e.g. `"abcd***"`) landing in the spec
-        # would both mislead the operator and, if re-applied verbatim, be
-        # treated as desired state. Non-dict payloads stay opaque/untouched.
-        info = entry.get("guardrail_info")
-        if isinstance(info, dict):
-            filtered, masked = _strip_masked_params(info)
-            if filtered:
-                entry["guardrail_info"] = filtered
-            elif "guardrail_info" in entry:
-                del entry["guardrail_info"]
-            if masked:
-                _emit_warn(
-                    "guardrails",
-                    name,
-                    f"masked guardrail_info value(s) {sorted(masked)} are not "
-                    "exported; fill them in manually (write-once)",
-                )
+        _strip_masked_map(entry, "litellm_params", name)
+        _strip_masked_map(entry, "guardrail_info", name)
         if entry:
             out.append(_empty_collections(entry))
     return out

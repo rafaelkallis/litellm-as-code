@@ -68,6 +68,13 @@ jobs:
         env:
           LITELLM_BASE_URL: http://localhost:4000
           LITELLM_API_KEY: sk-ci-master-key-0123456789abcdef
+          # Variant C is the publish gate's always-on full-field variant: on
+          # the pinned v1.97.0 proxy /organization is NOT enterprise-gated
+          # (the gate starts at 1.102) and variant C's team role is `user`
+          # (OSS-safe), so C and the mutation round that converges its spec
+          # run unlicensed — without this flag the publish gate would
+          # silently degrade to variant E + export only.
+          LITELLM_RUN_VARIANT_C: "1"
         run: uv run pytest tests/live -m 'integration and not slow' -v
 
       - name: Run slow integration test (documented example spec)

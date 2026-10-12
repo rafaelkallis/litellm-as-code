@@ -1,7 +1,8 @@
 """Organization reconciler.
 
-Identity: `organization_id` (stable in the spec); organizations without a fixed
-id fall back to `organization_alias`.
+Identity: the shared id-vs-alias contract in `resources.identity` — a fixed
+`organization_id` matches only on that id; the `organization_alias` fallback
+exists solely for alias-only entries.
 
 Memberships (`members_with_roles`) are handled by `reconcile_org_members`.
 
@@ -23,10 +24,45 @@ from typing import Any
 
 from ..api import LiteLLMClient
 from ..diff import comparable_diff
+from ..log import warn
 from ..types import Action, Diff, ReconcilerError
 from ..validation import DEFAULT_ORG_ROLE
+from .identity import find_row, remote_id_from_live
+from .members import reconcile_members
 
 COMPARABLE = ["organization_alias", "models"]
+
+# Since LiteLLM v1.102.0 the ENTIRE /organization router is wrapped with a
+# dependency that gates it on an Enterprise license; on unlicensed
+# self-hosted proxies every /organization/* call answers HTTP 403 with a body
+# like "Organizations are only available for LiteLLM Enterprise users", and
+# LiteLLMClient._request embeds that body verbatim in the ReconcilerError
+# text. Tolerance requires EVERY marker below (case-insensitive) in the error
+# text — a plain 401, a 500, or a 403 with a different body must never be
+# swallowed as the gate (see tests/test_org_gate.py).
+ORG_GATE_MARKERS = ("403", "enterprise")
+
+
+def is_org_gate_error(exc: ReconcilerError) -> bool:
+    """True only when the error text carries every enterprise-gate marker."""
+    text = str(exc).lower()
+    return all(marker in text for marker in ORG_GATE_MARKERS)
+
+
+def _list_organizations_tolerating_gate(
+    client: LiteLLMClient,
+) -> list[dict[str, Any]] | None:
+    """list_organizations(), or None when the proxy 403'd the enterprise gate.
+
+    Any other ReconcilerError (401, 500, a 403 without the gate body, ...)
+    propagates unchanged.
+    """
+    try:
+        return client.list_organizations()
+    except ReconcilerError as exc:
+        if is_org_gate_error(exc):
+            return None
+        raise
 
 
 def reconcile_organizations(
@@ -38,17 +74,43 @@ def reconcile_organizations(
 
     `reconciled_org_specs` lets `reconcile_org_members` find the remote
     organization_id after a create, without re-listing.
+
+    LiteLLM Enterprise gate: on unlicensed proxies (>=1.102.0) every
+    /organization/* call 403s. With no organizations declared the gate is
+    tolerated (empty list, stderr warning); with organizations declared the
+    reconciliation cannot converge and an actionable error is raised.
     """
     diffs: list[Diff] = []
     reconciled: list[dict[str, Any]] = []
-    live = client.list_organizations()
+    live = _list_organizations_tolerating_gate(client)
+    if live is None:
+        if spec_entries:
+            raise ReconcilerError(
+                f"spec declares {len(spec_entries)} organization(s), but this "
+                "proxy refuses /organization endpoints (LiteLLM Enterprise "
+                "license required). License the proxy, pin an older LiteLLM, "
+                "or drop organizations from the spec."
+            )
+        warn(
+            "litellm-as-code",
+            "organization management skipped: this proxy only exposes "
+            "/organization endpoints with a LiteLLM Enterprise license; "
+            "continuing without organizations",
+        )
+        return [], []
 
     for entry in spec_entries:
         org_id = entry.get("organization_id")
         org_alias = entry.get("organization_alias")
         display = org_alias or org_id or "(unnamed)"
 
-        existing = _find_remote(live, org_id, org_alias)
+        existing = find_row(
+            live,
+            id_field="organization_id",
+            alias_field="organization_alias",
+            fixed_id=org_id,
+            alias=org_alias,
+        )
         if existing is None:
             diffs.append(Diff("organization", display, Action.CREATE))
             if not dry_run:
@@ -58,8 +120,19 @@ def reconcile_organizations(
                 }
                 created = client.create_organization(create_payload)
                 created_id = created.get("organization_id")
-                live = client.list_organizations()  # refresh
-                remote_org_id = _remote_org_id_from_live(live, entry, created_id)
+                # Same gate tolerance as the initial listing: if the refresh
+                # ever 403'd the gate, `live` would read empty and "live is
+                # empty" unresolves the id below — a hard error, never a
+                # silent member drop.
+                live = _list_organizations_tolerating_gate(client) or []
+                remote_org_id = remote_id_from_live(
+                    live,
+                    id_field="organization_id",
+                    alias_field="organization_alias",
+                    fixed_id=entry.get("organization_id"),
+                    alias=org_alias,
+                    created_id=created_id,
+                )
                 if not remote_org_id:
                     # The organization was created but its remote id cannot be
                     # confirmed; member reconcile must not silently drop the
@@ -117,6 +190,12 @@ def reconcile_org_members(
     `members`), so no per-org info round-trip is needed.
     """
     diffs: list[Diff] = []
+    if not org_specs:
+        # Nothing spec-owned to reconcile: skip the /organization/list
+        # round-trip entirely — required so the enterprise-gate degradation
+        # path above (gate hit with an org-free spec) can hand back empty
+        # org_specs without this stage re-hitting the gated endpoint.
+        return diffs
     live_by_id = {o.get("organization_id"): o for o in client.list_organizations()}
 
     for org in org_specs:
@@ -135,95 +214,21 @@ def reconcile_org_members(
         live_org = live_by_id.get(org_id, {})
         live_members = live_org.get("members", []) or []
 
-        # An omitted role is server-defaulted ("internal_user") and echoed
-        # back on the next read; resolving the shared default here is what
-        # stops the perpetual role churn (issue #7) — and guarantees the role
-        # update below never fires with role=None.
-        want_by_id = {
-            m["user_id"]: m.get("role") or DEFAULT_ORG_ROLE
-            for m in want
-            if m.get("user_id")
-        }
-        # The spec side may omit the role (issue #7): the shared server
-        # default is resolved inline at BOTH comparison sides so an unset
-        # value can never churn (issue #12). The pinned proxy (v1.97.0,
-        # probed) always echoes member roles — making the live side symmetric
-        # to the want side is a convergence guarantee, not an observed drift
-        # class. Single-direction: an explicit spec role still diffs and
-        # fires member_update. (Org member rows echo `user_role`; team rows
-        # echo `role`.)
-        live_by_user = {
-            m.get("user_id"): m.get("user_role") or DEFAULT_ORG_ROLE
-            for m in live_members
-            if m.get("user_id")
-        }
-
-        for uid, role in want_by_id.items():
-            if uid not in live_by_user:
-                diffs.append(Diff("organization_member", f"{display}/{uid}", Action.CREATE))
-                if not dry_run:
-                    client.add_organization_members(
-                        org_id, [{"user_id": uid, "role": role}]
-                    )
-            elif live_by_user[uid] != role:
-                diffs.append(
-                    Diff(
-                        "organization_member",
-                        f"{display}/{uid}",
-                        Action.UPDATE,
-                        {"role": (live_by_user[uid], role)},
-                    )
-                )
-                if not dry_run:
-                    client.update_organization_member(org_id, uid, role=role)
-
-        for uid in live_by_user:
-            if uid not in want_by_id:
-                # Removals render as DELETE, not UPDATE({}), so the plan
-                # describes a delete (issue #7).
-                diffs.append(
-                    Diff("organization_member", f"{display}/{uid}", Action.DELETE)
-                )
-                if not dry_run:
-                    client.delete_organization_member(org_id, uid)
+        diffs.extend(
+            reconcile_members(
+                resource_type="organization_member",
+                container_display=display,
+                want=want,
+                live_members=live_members,
+                default_role=DEFAULT_ORG_ROLE,
+                live_role_key="user_role",
+                add=lambda members: client.add_organization_members(org_id, members),
+                set_role=lambda uid, role: client.update_organization_member(
+                    org_id, uid, role=role
+                ),
+                remove=lambda uid: client.delete_organization_member(org_id, uid),
+                dry_run=dry_run,
+            )
+        )
 
     return diffs
-
-
-def _find_remote(
-    orgs: list[dict[str, Any]], org_id: str | None, org_alias: str | None
-) -> dict[str, Any] | None:
-    # Identity contract (issue #9 review, teams.py parity): a spec entry that
-    # declares a fixed organization_id matches ONLY on that id; the alias
-    # fallback exists solely for alias-only entries. Letting it fire for an
-    # unmatched fixed id would retarget (and, with id-pinned updates, silently
-    # mutate) a different alias-matched organization.
-    if org_id:
-        for o in orgs:
-            if o.get("organization_id") == org_id:
-                return o
-        return None
-    if org_alias:
-        for o in orgs:
-            if o.get("organization_alias") == org_alias:
-                return o
-    return None
-
-
-def _remote_org_id_from_live(
-    live: list[dict[str, Any]], entry: dict[str, Any], created_id: str | None = None
-) -> str:
-    """Resolve the remote organization_id for a just-created org."""
-    org_id = entry.get("organization_id") or created_id
-    alias = entry.get("organization_alias")
-    for o in live:
-        if org_id and o.get("organization_id") == org_id:
-            return o["organization_id"]
-    # Same identity rule as _find_remote (issue #9 review): for a fixed-id
-    # entry the id is authoritative even when the listing read is stale; only
-    # alias-only entries may fall back to organization_alias.
-    if alias and not entry.get("organization_id"):
-        for o in live:
-            if o.get("organization_alias") == alias:
-                return o["organization_id"]
-    return org_id or ""

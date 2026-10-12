@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 from .api import LiteLLMClient
@@ -20,7 +21,72 @@ from .resources import (
     reconcile_users,
 )
 from .spec import load_spec
-from .types import Plan
+from .types import Diff, Plan
+
+
+def _stage_diffs(
+    client: LiteLLMClient,
+    spec: dict[str, Any],
+    dry_run: bool,
+) -> Iterator[tuple[str, list[Diff]]]:
+    """Yield (banner title, diffs) per reconcile stage, in the fixed order.
+
+    Ordering is fixed (AGENTS.md §3): budgets -> models -> credentials ->
+    organizations -> users -> org members -> teams -> team members -> keys ->
+    guardrails -> policies. Acyclic & single-target. Models come before
+    credentials because a credential's `model_id` must reference an existing
+    model (POST /credentials 404s otherwise). Models/credentials come before
+    organizations because LiteLLM requires at least one model configured
+    before it lets you create an organization on a fresh proxy (probed
+    live). Org members come after users because memberships must attach to
+    user rows this run owns: on the pinned proxy (v1.97.0, probed)
+    /organization/member_add even UPSERTS an unmanaged ghost user row for an
+    unknown user, so users-first keeps the spec-declared row authoritative
+    and convergence version-independent (issue #12). The same reasoning
+    already applies to team members, which run right after their teams.
+
+    Team members have no banner of their own: they are reported under the
+    Teams title, exactly as before this stage table existed.
+    """
+    yield "Budgets", reconcile_budgets(
+        client, spec.get("budgets", []), dry_run=dry_run
+    )
+    yield "Models", reconcile_models(client, spec.get("models", []), dry_run=dry_run)
+    yield "Credentials", reconcile_credentials(
+        client, spec.get("credentials", []), dry_run=dry_run
+    )
+
+    org_diffs, org_specs = reconcile_organizations(
+        client, spec.get("organizations", []), dry_run=dry_run
+    )
+    yield "Organizations", org_diffs
+
+    yield "Users", reconcile_users(client, spec.get("users", []), dry_run=dry_run)
+
+    # Org members after users (issue #12): memberships must attach to user
+    # rows this run owns. Rows created by the `users` step are the spec's
+    # own, so members must always attach to those (rationale in the
+    # docstring above).
+    yield "Organization members", reconcile_org_members(
+        client, org_specs, dry_run=dry_run
+    )
+
+    team_diffs, team_specs = reconcile_teams(
+        client, spec.get("teams", []), dry_run=dry_run
+    )
+    yield "Teams", team_diffs + reconcile_team_members(
+        client, team_specs, dry_run=dry_run
+    )
+
+    yield "Virtual keys", reconcile_keys(
+        client, spec.get("virtual_keys", []), dry_run=dry_run
+    )
+    yield "Guardrails", reconcile_guardrails(
+        client, spec.get("guardrails", []), dry_run=dry_run
+    )
+    yield "Policies", reconcile_policies(
+        client, spec.get("policies", []), dry_run=dry_run
+    )
 
 
 def _render_plan(plan: Plan) -> None:
@@ -42,69 +108,15 @@ def reconcile(
 ) -> Plan:
     """Run the convergence loop: spec diff -> apply (unless dry-run).
 
-    Ordering is fixed: budgets -> models -> credentials -> organizations ->
-    users -> org members -> teams -> team members -> keys -> guardrails ->
-    policies. Models must come before credentials: a credential can bind a
-    model via `model_id`, and POST /credentials rejects an unknown model with
-    a 404. Models/credentials come before organizations because LiteLLM
-    requires at least one model to be configured before it lets you create an
-    organization on a fresh proxy. Org members come after users because
-    memberships must attach to user rows this run owns: on the pinned proxy
-    (v1.97.0, probed live) /organization/member_add even UPSERTS an unmanaged
-    ghost user row for an unknown user, while other versions may validate —
-    users-first keeps the spec-declared row authoritative in both cases (the
-    same reasoning already applies to team members, which run after users).
-    Acyclic & single-target.
+    The fixed stage order and the org/team member hand-offs live in
+    `_stage_diffs` (single source of truth, AGENTS.md §5).
     """
     spec = load_spec(spec_path)
     plan = Plan()
 
-    def extend(diffs):
+    for title, diffs in _stage_diffs(client, spec, dry_run=dry_run):
+        banner(title)
         plan.diffs.extend(diffs)
-
-    banner("Budgets")
-    extend(reconcile_budgets(client, spec.get("budgets", []), dry_run=dry_run))
-
-    banner("Models")
-    extend(reconcile_models(client, spec.get("models", []), dry_run=dry_run))
-
-    banner("Credentials")
-    extend(reconcile_credentials(client, spec.get("credentials", []), dry_run=dry_run))
-
-    banner("Organizations")
-    org_diffs, org_specs = reconcile_organizations(
-        client, spec.get("organizations", []), dry_run=dry_run
-    )
-    extend(org_diffs)
-
-    banner("Users")
-    extend(reconcile_users(client, spec.get("users", []), dry_run=dry_run))
-
-    # Org members after users (issue #12): memberships must attach to user
-    # rows this run owns. On the pinned proxy (v1.97.0, probed)
-    # /organization/member_add upserts an unmanaged ghost user row for an
-    # unknown user; rows created by the `users` step are the spec's own, so
-    # members must always attach to those.
-    banner("Organization members")
-    extend(reconcile_org_members(client, org_specs, dry_run=dry_run))
-
-    banner("Teams")
-    team_diffs, team_specs = reconcile_teams(
-        client, spec.get("teams", []), dry_run=dry_run
-    )
-    extend(team_diffs)
-    extend(
-        reconcile_team_members(client, team_specs, dry_run=dry_run)
-    )
-
-    banner("Virtual keys")
-    extend(reconcile_keys(client, spec.get("virtual_keys", []), dry_run=dry_run))
-
-    banner("Guardrails")
-    extend(reconcile_guardrails(client, spec.get("guardrails", []), dry_run=dry_run))
-
-    banner("Policies")
-    extend(reconcile_policies(client, spec.get("policies", []), dry_run=dry_run))
 
     return plan
 
