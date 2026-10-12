@@ -153,6 +153,121 @@ def _desired_cost_on_live(want_key: str, want_value: Any, have: dict[str, Any]) 
     return want_value == have.get(want_key)
 
 
+def _desired_model_state(entry: dict[str, Any]) -> dict[str, Any]:
+    """The spec entry's managed state, costs converted to per-token units.
+
+    None-valued fields are dropped so an unset spec field never reads as
+    drift against the live echo.
+    """
+    mi = entry.get("model_info") or {}
+    lp = entry.get("litellm_params") or {}
+    # per-million -> per-token for the compare (spec convention, AGENTS.md §5)
+    want = {
+        "mode": mi.get("mode"),
+        "base_model": mi.get("base_model"),
+        "tier": mi.get("tier"),
+        "custom_llm_provider": lp.get("custom_llm_provider"),
+        "model": lp.get("model"),
+        "litellm_credential_name": lp.get("litellm_credential_name"),
+        "input_cost_per_token": (
+            _cost_to_per_token(mi.get("input_cost_per_million_tokens"))
+            if mi.get("input_cost_per_million_tokens") is not None
+            else mi.get("input_cost_per_token")
+        ),
+        "output_cost_per_token": (
+            _cost_to_per_token(mi.get("output_cost_per_million_tokens"))
+            if mi.get("output_cost_per_million_tokens") is not None
+            else mi.get("output_cost_per_token")
+        ),
+    }
+    return {k: v for k, v in want.items() if v is not None}
+
+
+def _model_changes(
+    want: dict[str, Any], have: dict[str, Any]
+) -> dict[str, tuple[Any, Any]]:
+    """Comparable drift between desired and the live echo.
+
+    Costs compare with unit tolerance (per-token vs the per-million/1e6
+    echo, 0 == 0.0, int vs float); `model` compares the remote
+    "<provider>/<base>" echo against litellm_params.model literally.
+    """
+    changes: dict[str, tuple[Any, Any]] = {}
+    for k, w in want.items():
+        h = have.get(k)
+        if k == "input_cost_per_token":
+            equal = _per_token_equal(w, have, "input_cost_per_million_tokens")
+        elif k == "output_cost_per_token":
+            equal = _per_token_equal(w, have, "output_cost_per_million_tokens")
+        else:
+            equal = w == h
+        if not equal:
+            changes[k] = (w, h)
+    return changes
+
+
+def _suppress_cost_drift(
+    changes: dict[str, tuple[Any, Any]], costs_persist: bool | None
+) -> bool:
+    """Drop unmanageable per-token cost keys from the change set (>= 1.102).
+
+    Called when the version probe already told us the generation: the plan
+    then only describes deltas that can actually be applied. Returns True
+    when anything was dropped.
+    """
+    if costs_persist is not False:
+        return False
+    dropped = False
+    for k in [k for k in changes if k in _COST_KEYS]:
+        del changes[k]
+        dropped = True
+    return dropped
+
+
+def _accept_unpersisted_costs(
+    client: LiteLLMClient,
+    cost_only_patched: list[tuple[Diff, dict[str, Any]]],
+) -> int:
+    """Verify freshly patched cost-only updates; ACCEPT what didn't stick.
+
+    One re-list fetch covers the whole phase (non-dry-run callers only). A
+    model's costs "stuck" iff EVERY drifted cost key is now present on live
+    (a per-million echo still counts as present — the same helpers). If the
+    proxy did not persist them, the Diff is downgraded to an accepted NOOP
+    carrying the SERVER_DERIVED_PRICING message so the plan converges (dead
+    PATCHes still go out every run). Returns the downgrade count for the
+    caller's one-per-run warning.
+    """
+    live_after = {
+        m["model_name"]: m
+        for m in client.list_models()  # one fetch for the whole phase
+        if m.get("model_name")
+    }
+    accepted = 0
+    for diff, want in cost_only_patched:  # per-model acceptance
+        remote_after = live_after.get(diff.name)
+        if remote_after is None:
+            # Race: the row vanished between the PATCH and the re-list.
+            # Verification is impossible, and "can't verify" means "don't
+            # accept": leave the Diff untouched (still an update) — the
+            # next run re-evaluates the drift against whatever is live.
+            continue
+        # Costs "stuck" iff EVERY drifted cost key is now present on live
+        # (a per-million echo still counts as present — the same helpers).
+        stuck = all(
+            _desired_cost_on_live(k, want[k], _comparable_model(remote_after))
+            for k in diff.changes
+        )
+        if not stuck:
+            # This proxy did not persist the costs — accept the cost-only
+            # drift: downgrade UPDATE -> NOOP with the acceptance message
+            # so the plan converges (dead PATCHes still sent every run).
+            diff.action = Action.NOOP
+            diff.message = _ACCEPTED_PRICING_MESSAGE
+            accepted += 1
+    return accepted
+
+
 def reconcile_models(
     client: LiteLLMClient,
     spec_entries: list[dict[str, Any]],
@@ -171,30 +286,7 @@ def reconcile_models(
     for entry in spec_entries:
         name = entry["model_name"]
         remote = live.get(name)
-        mi = entry.get("model_info") or {}
-        lp = entry.get("litellm_params") or {}
-
-        # convert per-million -> per-token for the compare
-        want = {
-            "mode": mi.get("mode"),
-            "base_model": mi.get("base_model"),
-            "tier": mi.get("tier"),
-            "custom_llm_provider": lp.get("custom_llm_provider"),
-            "model": lp.get("model"),
-            "litellm_credential_name": lp.get("litellm_credential_name"),
-            "input_cost_per_token": (
-                _cost_to_per_token(mi.get("input_cost_per_million_tokens"))
-                if mi.get("input_cost_per_million_tokens") is not None
-                else mi.get("input_cost_per_token")
-            ),
-            "output_cost_per_token": (
-                _cost_to_per_token(mi.get("output_cost_per_million_tokens"))
-                if mi.get("output_cost_per_million_tokens") is not None
-                else mi.get("output_cost_per_token")
-            ),
-        }
-        # drop None-valued entries from desired so they don't read as drift
-        want = {k: v for k, v in want.items() if v is not None}
+        want = _desired_model_state(entry)
 
         if remote is None:
             diffs.append(Diff("model", name, Action.CREATE))
@@ -202,28 +294,11 @@ def reconcile_models(
                 client.create_model(entry)
             continue
         have = _comparable_model(remote)
-        # treat remote "model" <provider>/<base> as equal to our litellm_params.model
-        # and compare costs with unit tolerance (per-token vs per-million/1e6,
-        # 0 == 0.0, int vs float)
-        changes = {}
-        for k in want:
-            h = have.get(k)
-            if k == "input_cost_per_token":
-                equal = _per_token_equal(want[k], have, "input_cost_per_million_tokens")
-            elif k == "output_cost_per_token":
-                equal = _per_token_equal(want[k], have, "output_cost_per_million_tokens")
-            else:
-                equal = want[k] == h
-            if not equal:
-                changes[k] = (want[k], h)
-        suppressed_costs = False
-        if costs_persist is False:
-            # Generation known up front: per-deployment costs are unmanageable
-            # on this proxy — drop the cost keys from the change set so the
-            # plan only describes deltas that can actually be applied.
-            for k in [k for k in changes if k in _COST_KEYS]:
-                del changes[k]
-                suppressed_costs = True
+        changes = _model_changes(want, have)
+        # Generation known up front: per-deployment costs are unmanageable on
+        # this proxy — drop the cost keys from the change set so the plan
+        # only describes deltas that can actually be applied.
+        suppressed_costs = _suppress_cost_drift(changes, costs_persist)
         if changes:
             diff = Diff("model", name, Action.UPDATE, changes)
             diffs.append(diff)
@@ -262,33 +337,7 @@ def reconcile_models(
     # --dry-run plan keeps showing the cost update even on a proxy that will
     # not persist it (documented in the module docstring).
     if not dry_run and cost_only_patched:
-        live_after = {
-            m["model_name"]: m
-            for m in client.list_models()  # one fetch for the whole phase
-            if m.get("model_name")
-        }
-        accepted = 0
-        for diff, want in cost_only_patched:  # per-model acceptance
-            remote_after = live_after.get(diff.name)
-            if remote_after is None:
-                # Race: the row vanished between the PATCH and the re-list.
-                # Verification is impossible, and "can't verify" means "don't
-                # accept": leave the Diff untouched (still an update) — the
-                # next run re-evaluates the drift against whatever is live.
-                continue
-            # Costs "stuck" iff EVERY drifted cost key is now present on live
-            # (a per-million echo still counts as present — the same helpers).
-            stuck = all(
-                _desired_cost_on_live(k, want[k], _comparable_model(remote_after))
-                for k in diff.changes
-            )
-            if not stuck:
-                # This proxy did not persist the costs — accept the cost-only
-                # drift: downgrade UPDATE -> NOOP with the acceptance message
-                # so the plan converges (dead PATCHes still sent every run).
-                diff.action = Action.NOOP
-                diff.message = _ACCEPTED_PRICING_MESSAGE
-                accepted += 1
+        accepted = _accept_unpersisted_costs(client, cost_only_patched)
         if accepted:
             warn(
                 "litellm-as-code",
