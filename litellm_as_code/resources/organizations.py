@@ -1,7 +1,8 @@
 """Organization reconciler.
 
-Identity: `organization_id` (stable in the spec); organizations without a fixed
-id fall back to `organization_alias`.
+Identity: the shared id-vs-alias contract in `resources.identity` — a fixed
+`organization_id` matches only on that id; the `organization_alias` fallback
+exists solely for alias-only entries.
 
 Memberships (`members_with_roles`) are handled by `reconcile_org_members`.
 
@@ -26,6 +27,8 @@ from ..diff import comparable_diff
 from ..log import warn
 from ..types import Action, Diff, ReconcilerError
 from ..validation import DEFAULT_ORG_ROLE
+from .identity import find_row, remote_id_from_live
+from .members import reconcile_members
 
 COMPARABLE = ["organization_alias", "models"]
 
@@ -101,7 +104,13 @@ def reconcile_organizations(
         org_alias = entry.get("organization_alias")
         display = org_alias or org_id or "(unnamed)"
 
-        existing = _find_remote(live, org_id, org_alias)
+        existing = find_row(
+            live,
+            id_field="organization_id",
+            alias_field="organization_alias",
+            fixed_id=org_id,
+            alias=org_alias,
+        )
         if existing is None:
             diffs.append(Diff("organization", display, Action.CREATE))
             if not dry_run:
@@ -116,7 +125,14 @@ def reconcile_organizations(
                 # empty" unresolves the id below — a hard error, never a
                 # silent member drop.
                 live = _list_organizations_tolerating_gate(client) or []
-                remote_org_id = _remote_org_id_from_live(live, entry, created_id)
+                remote_org_id = remote_id_from_live(
+                    live,
+                    id_field="organization_id",
+                    alias_field="organization_alias",
+                    fixed_id=entry.get("organization_id"),
+                    alias=org_alias,
+                    created_id=created_id,
+                )
                 if not remote_org_id:
                     # The organization was created but its remote id cannot be
                     # confirmed; member reconcile must not silently drop the
@@ -198,95 +214,21 @@ def reconcile_org_members(
         live_org = live_by_id.get(org_id, {})
         live_members = live_org.get("members", []) or []
 
-        # An omitted role is server-defaulted ("internal_user") and echoed
-        # back on the next read; resolving the shared default here is what
-        # stops the perpetual role churn (issue #7) — and guarantees the role
-        # update below never fires with role=None.
-        want_by_id = {
-            m["user_id"]: m.get("role") or DEFAULT_ORG_ROLE
-            for m in want
-            if m.get("user_id")
-        }
-        # The spec side may omit the role (issue #7): the shared server
-        # default is resolved inline at BOTH comparison sides so an unset
-        # value can never churn (issue #12). The pinned proxy (v1.97.0,
-        # probed) always echoes member roles — making the live side symmetric
-        # to the want side is a convergence guarantee, not an observed drift
-        # class. Single-direction: an explicit spec role still diffs and
-        # fires member_update. (Org member rows echo `user_role`; team rows
-        # echo `role`.)
-        live_by_user = {
-            m.get("user_id"): m.get("user_role") or DEFAULT_ORG_ROLE
-            for m in live_members
-            if m.get("user_id")
-        }
-
-        for uid, role in want_by_id.items():
-            if uid not in live_by_user:
-                diffs.append(Diff("organization_member", f"{display}/{uid}", Action.CREATE))
-                if not dry_run:
-                    client.add_organization_members(
-                        org_id, [{"user_id": uid, "role": role}]
-                    )
-            elif live_by_user[uid] != role:
-                diffs.append(
-                    Diff(
-                        "organization_member",
-                        f"{display}/{uid}",
-                        Action.UPDATE,
-                        {"role": (live_by_user[uid], role)},
-                    )
-                )
-                if not dry_run:
-                    client.update_organization_member(org_id, uid, role=role)
-
-        for uid in live_by_user:
-            if uid not in want_by_id:
-                # Removals render as DELETE, not UPDATE({}), so the plan
-                # describes a delete (issue #7).
-                diffs.append(
-                    Diff("organization_member", f"{display}/{uid}", Action.DELETE)
-                )
-                if not dry_run:
-                    client.delete_organization_member(org_id, uid)
+        diffs.extend(
+            reconcile_members(
+                resource_type="organization_member",
+                container_display=display,
+                want=want,
+                live_members=live_members,
+                default_role=DEFAULT_ORG_ROLE,
+                live_role_key="user_role",
+                add=lambda members: client.add_organization_members(org_id, members),
+                set_role=lambda uid, role: client.update_organization_member(
+                    org_id, uid, role=role
+                ),
+                remove=lambda uid: client.delete_organization_member(org_id, uid),
+                dry_run=dry_run,
+            )
+        )
 
     return diffs
-
-
-def _find_remote(
-    orgs: list[dict[str, Any]], org_id: str | None, org_alias: str | None
-) -> dict[str, Any] | None:
-    # Identity contract (issue #9 review, teams.py parity): a spec entry that
-    # declares a fixed organization_id matches ONLY on that id; the alias
-    # fallback exists solely for alias-only entries. Letting it fire for an
-    # unmatched fixed id would retarget (and, with id-pinned updates, silently
-    # mutate) a different alias-matched organization.
-    if org_id:
-        for o in orgs:
-            if o.get("organization_id") == org_id:
-                return o
-        return None
-    if org_alias:
-        for o in orgs:
-            if o.get("organization_alias") == org_alias:
-                return o
-    return None
-
-
-def _remote_org_id_from_live(
-    live: list[dict[str, Any]], entry: dict[str, Any], created_id: str | None = None
-) -> str:
-    """Resolve the remote organization_id for a just-created org."""
-    org_id = entry.get("organization_id") or created_id
-    alias = entry.get("organization_alias")
-    for o in live:
-        if org_id and o.get("organization_id") == org_id:
-            return o["organization_id"]
-    # Same identity rule as _find_remote (issue #9 review): for a fixed-id
-    # entry the id is authoritative even when the listing read is stale; only
-    # alias-only entries may fall back to organization_alias.
-    if alias and not entry.get("organization_id"):
-        for o in live:
-            if o.get("organization_alias") == alias:
-                return o["organization_id"]
-    return org_id or ""

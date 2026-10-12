@@ -1,11 +1,13 @@
 """Team reconciler.
 
-Identity: for teams with a fixed `team_id` in the spec, match on that; otherwise
-match on `team_alias`.
+Identity: the shared id-vs-alias contract in `resources.identity` — a fixed
+`team_id` matches only on that id; the `team_alias` fallback exists solely
+for alias-only entries.
 
 Memberships (`members_with_roles`) are handled by `reconcile_team_members`:
 - create the team first,
-- then reconcile its members (member_add / member_delete).
+- then reconcile its members (member_add / member_update / member_delete;
+  the shared loop lives in `resources.members`).
 
 Mutation: POST /team/new | /team/update | /team/member_add | /team/member_delete.
 """
@@ -18,28 +20,10 @@ from ..api import LiteLLMClient
 from ..diff import comparable_diff
 from ..types import Action, Diff, ReconcilerError
 from ..validation import DEFAULT_TEAM_ROLE
+from .identity import find_row, remote_id_from_live
+from .members import reconcile_members
 
 COMPARABLE = ["team_alias", "organization_id", "max_budget", "budget_duration", "models"]
-
-
-def _find_remote(
-    teams: list[dict[str, Any]], team_id: str | None, team_alias: str | None
-) -> dict[str, Any] | None:
-    # Identity contract (issue #9 review): a spec entry that declares a fixed
-    # team_id matches ONLY on that id. The team_alias fallback exists solely
-    # for alias-only entries; letting it fire for an unmatched fixed id would
-    # retarget (and now, with id-pinned updates, silently mutate) a different
-    # alias-matched team.
-    if team_id:
-        for t in teams:
-            if t.get("team_id") == team_id:
-                return t
-        return None
-    if team_alias:
-        for t in teams:
-            if t.get("team_alias") == team_alias:
-                return t
-    return None
 
 
 def reconcile_teams(
@@ -61,7 +45,13 @@ def reconcile_teams(
         team_alias = entry.get("team_alias")
         display = team_alias or team_id or "(unnamed)"
 
-        existing = _find_remote(live, team_id, team_alias)
+        existing = find_row(
+            live,
+            id_field="team_id",
+            alias_field="team_alias",
+            fixed_id=team_id,
+            alias=team_alias,
+        )
         if existing is None:
             diffs.append(Diff("team", display, Action.CREATE))
             if not dry_run:
@@ -78,8 +68,13 @@ def reconcile_teams(
                 live = client.list_teams()  # refresh so member reconcile finds it
                 # Carry the remote team_id forward so member reconcile can attach
                 # to it without a second lookup.
-                remote_team_id = _remote_team_id_from_live(
-                    live, entry, created.get("team_id")
+                remote_team_id = remote_id_from_live(
+                    live,
+                    id_field="team_id",
+                    alias_field="team_alias",
+                    fixed_id=entry.get("team_id"),
+                    alias=team_alias,
+                    created_id=created.get("team_id"),
                 )
                 if not remote_team_id:
                     # Never interpolate: the team was created but its remote id
@@ -123,32 +118,6 @@ def reconcile_teams(
     return diffs, reconciled
 
 
-def _remote_team_id_from_live(
-    live: list[dict[str, Any]],
-    entry: dict[str, Any],
-    created_id: str | None = None,
-) -> str:
-    """Find the remote team_id for a just-created team in the refreshed listing.
-
-    Uses the same identity rule as `_find_remote`: prefer a fixed `team_id`
-    (or, on a fresh create, the id minted by POST /team/new), then fall back
-    to `team_alias`. Returns "" if it can't be located.
-    """
-    team_id = entry.get("team_id") or created_id
-    alias = entry.get("team_alias")
-    for t in live:
-        if team_id and t.get("team_id") == team_id:
-            return t["team_id"]
-    # Same identity rule as _find_remote (issue #9 review): for a fixed-id
-    # entry the id is authoritative even when the listing read is stale; only
-    # alias-only entries may fall back to team_alias.
-    if alias and not entry.get("team_id"):
-        for t in live:
-            if t.get("team_alias") == alias:
-                return t["team_id"]
-    return team_id or ""
-
-
 def reconcile_team_members(
     client: LiteLLMClient,
     team_specs: list[dict[str, Any]],
@@ -157,7 +126,10 @@ def reconcile_team_members(
     """Make each team's live members match `members_with_roles` in the spec.
 
     Only handles members *declared* in the spec (adds missing, updates roles,
-    removes members not in the spec for that team).
+    removes members not in the spec for that team). The add / role-fix /
+    removal loop with the issue #7/#12 role-default handling is shared with
+    organizations in `resources.members`; this wrapper binds the team client
+    calls and the unresolvable-team_id hard error (issue #4).
     """
     diffs: list[Diff] = []
     for team in team_specs:
@@ -181,52 +153,22 @@ def reconcile_team_members(
         team_info = _team_info(client, team_id, retry=bool(team.get("_just_created")))
         live_members = team_info.get("members_with_roles", [])
 
-        # An omitted role is server-defaulted ("user") and echoed back on the
-        # next read; resolving the shared default here is what stops the
-        # perpetual role churn (issue #7) — and guarantees the role update
-        # below never fires with role=None.
-        want_by_id = {
-            m["user_id"]: m.get("role") or DEFAULT_TEAM_ROLE for m in want
-        }
-        # The spec side may omit the role (issue #7): the shared server
-        # default is resolved inline at BOTH comparison sides so an unset
-        # value can never churn (issue #12). The pinned proxy (v1.97.0,
-        # probed) always echoes member roles — making the live side symmetric
-        # to the want side is a convergence guarantee, not an observed drift
-        # class. Single-direction: an explicit spec role still diffs and
-        # fires member_update.
-        live_by_id = {
-            m["user_id"]: m.get("role") or DEFAULT_TEAM_ROLE
-            for m in live_members
-            if "user_id" in m
-        }
-
-        for uid, role in want_by_id.items():
-            if uid not in live_by_id:
-                diffs.append(Diff("team_member", f"{display}/{uid}", Action.CREATE))
-                if not dry_run:
-                    client.add_team_members(team_id, [{"user_id": uid, "role": role}])
-            elif live_by_id[uid] != role:
-                diffs.append(
-                    Diff(
-                        "team_member",
-                        f"{display}/{uid}",
-                        Action.UPDATE,
-                        {"role": (live_by_id[uid], role)},
-                    )
-                )
-                if not dry_run:
-                    # member_add 400s (team_member_already_in_team) for an
-                    # existing member; the role must go through member_update.
-                    client.update_team_member_role(team_id, uid, role=role)
-
-        for uid in live_by_id:
-            if uid not in want_by_id:
-                # Removals render as DELETE, not UPDATE({}), so the plan
-                # describes a delete (issue #7).
-                diffs.append(Diff("team_member", f"{display}/{uid}", Action.DELETE))
-                if not dry_run:
-                    client.delete_team_member(team_id, user_id=uid)
+        diffs.extend(
+            reconcile_members(
+                resource_type="team_member",
+                container_display=display,
+                want=want,
+                live_members=live_members,
+                default_role=DEFAULT_TEAM_ROLE,
+                live_role_key="role",
+                add=lambda members: client.add_team_members(team_id, members),
+                set_role=lambda uid, role: client.update_team_member_role(
+                    team_id, uid, role=role
+                ),
+                remove=lambda uid: client.delete_team_member(team_id, user_id=uid),
+                dry_run=dry_run,
+            )
+        )
 
     return diffs
 
