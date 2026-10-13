@@ -10,6 +10,7 @@ the compat-matrix workflow).
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -51,3 +52,62 @@ def test_extract_summary_flags_a_vacuous_leg():
     counts, no_tests = compat_matrix._extract_summary("collected 9 items\nno tests ran")
     assert counts == {"passed": 0, "failed": 0, "errors": 0, "skipped": 0}
     assert no_tests is True
+
+
+# ------------------------------------------------------------------ report
+# (--report-out: the JSON contract scripts/compat_canary.py consumes —
+# tests/test_compat_canary.py validates the consumer side of the same schema.)
+
+
+def _leg(**overrides) -> compat_matrix.LegResult:
+    base = dict(
+        version="v1.105.0",
+        green=True,
+        note="",
+        exit_code=0,
+        counts={"passed": 9, "failed": 0, "errors": 0, "skipped": 4},
+        no_tests=False,
+        tail="",
+    )
+    base.update(overrides)
+    return compat_matrix.LegResult(**base)
+
+
+def test_report_payload_round_trips_leg_data_and_works_for_fail_fast():
+    red_leg = _leg(green=False, note="pytest exited 1", exit_code=1, tail="boom")
+    payload = compat_matrix.report_payload(
+        ["v1.97.0", "v1.105.0"], [_leg(version="v1.97.0"), red_leg], []
+    )
+    assert payload["all_green"] is False
+    assert payload["ran_all"] is True
+    assert [leg["version"] for leg in payload["legs"]] == ["v1.97.0", "v1.105.0"]
+    assert payload["legs"][1]["tail"] == "boom"
+    assert payload["not_run"] == []
+    # fail-fast cut: the not-run versions are reported separately
+    cut = compat_matrix.report_payload(["v1.97.0", "v1.105.0"], [], ["v1.105.0"])
+    assert cut["all_green"] is False  # no results at all is never "green"
+    assert cut["ran_all"] is False
+    assert cut["not_run"] == ["v1.105.0"]
+
+
+def test_report_payload_is_byte_deterministic_for_identical_matrices():
+    payload = compat_matrix.report_payload(["v1.97.0"], [_leg(version="v1.97.0")], [])
+    again = compat_matrix.report_payload(["v1.97.0"], [_leg(version="v1.97.0")], [])
+    first = json.dumps(payload, sort_keys=True, indent=2) + "\n"
+    second = json.dumps(again, sort_keys=True, indent=2) + "\n"
+    assert first == second  # what write_report writes; no diff churn between runs
+
+
+def test_write_report_creates_the_directory_and_writes_the_payload(tmp_path):
+    target = tmp_path / "nested" / "report.json"
+    compat_matrix.write_report(target, compat_matrix.report_payload(["v1.97.0"], [], []))
+    assert json.loads(target.read_text(encoding="utf-8"))["harness"] == "compat_matrix"
+    assert target.read_text(encoding="utf-8").endswith("\n")  # trailing newline
+
+
+def test_parser_exposes_report_out_and_defaults_to_none():
+    parser = compat_matrix.build_parser()
+    defaults = parser.parse_args([])
+    assert defaults.report_out is None
+    explicit = parser.parse_args(["--report-out", "reports/nightly.json"])
+    assert str(explicit.report_out) == "reports/nightly.json"
