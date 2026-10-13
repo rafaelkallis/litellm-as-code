@@ -405,9 +405,26 @@ def test_nightly_workflow_wires_the_contract_digest_glue():
     diffstep = steps["Diff consumed-surface digest vs last-known-good"]
     assert "openapi-last-known-good.json" in diffstep["run"]
     assert "contract-drift.txt" in diffstep["run"]
+    # Regression guard for run 38404424089: the report encloses per-leg
+    # digests (harness='openapi_digest_report'); the diff CLI wants the RAW
+    # digest — the glue must extract the canary leg first and diff THAT, and
+    # a format error (exit 1) must fail the step instead of faking drift.
+    assert "--digest-out reports/nightly-digest.json" not in diffstep["run"]
+    assert "reports/digest-canary.json" in diffstep["run"]  # extraction output
+    assert '"digest" in leg' in diffstep["run"]  # skips capture_error legs
+    assert "--new reports/digest-canary.json" in diffstep["run"]
+    assert "nightly-digest.json --new" not in diffstep["run"]
+    assert 'fi\n\n          echo "code=$code"' in diffstep["run"] or (
+        "-eq 1" in diffstep["run"] and "exit 1" in diffstep["run"]
+    )
     refresh = steps["Refresh last-known-good digest (green + drift-free only)"]
     assert "steps.digestdiff.outputs.code == '0'" in refresh["if"]
     assert "steps.digestdiff.outputs.all_green == 'true'" in refresh["if"]
+    # the refresh commits the RAW canary digest, and the sidecar's
+    # spec_version comes from it (the report has no such key)
+    assert "cp reports/digest-canary.json tests/live/compat/openapi-last-known-good.json" in refresh["run"]
+    assert 'json.load(open("reports/digest-canary.json"))' in refresh["run"]
+    assert "cp reports/nightly-digest.json" not in refresh["run"]
     # the manage step forwards drift text when it exists
     manage_run = steps["Manage compat-canary tracking issue"]["run"]
     assert "--digest-diff" in manage_run and "contract-drift.txt" in manage_run

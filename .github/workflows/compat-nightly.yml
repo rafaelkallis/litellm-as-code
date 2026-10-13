@@ -108,11 +108,35 @@ jobs:
         if: ${{ inputs.simulate != 'red' && inputs.simulate != 'green' }}
         run: |
           set +e
+          # The harness's --digest-out writes a per-leg DIGEST REPORT
+          # (harness='openapi_digest_report', one 'digest' per leg); the diff
+          # CLI wants a single RAW digest (the last-known-good shape). Extract
+          # the canary leg's digest first — regression-guarded in
+          # tests/test_compat_canary.py (run 38404424089 diffed the report
+          # itself and verdicted a false drift).
+          python - <<'PY'
+          import json
+          report = json.load(open("reports/nightly-digest.json"))
+          legs = report.get("legs", [])
+          canary = next((leg for leg in reversed(legs) if "digest" in leg), None)
+          if canary is None:
+              raise SystemExit(f"no leg captured a digest in the report: report={report.get('harness')!r} legs={len(legs)} — refusing to fake a diff")
+          with open("reports/digest-canary.json", "w") as fh:
+              json.dump(canary["digest"], fh, sort_keys=True, indent=2)
+              fh.write("\n")
+          print(f"canary digest extracted: {canary['version']} (spec_version={canary['digest'].get('spec_version')})")
+          PY
+          code=0
           python scripts/openapi_digest.py diff \
             --old tests/live/compat/openapi-last-known-good.json \
-            --new reports/nightly-digest.json \
-            --text-out reports/contract-drift.txt
-          code=$?
+            --new reports/digest-canary.json \
+            --text-out reports/contract-drift.txt || code=$?
+          if [ "$code" -eq 1 ]; then
+            # exit 1 = malformed inputs (unreadable / wrong harness). Fail the
+            # step LOUDLY — a format error is not contract drift.
+            echo "digest diff hit a format error — failing loudly"
+            exit 1
+          fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
           all_green="$(python -c 'import json; print(str(json.load(open("reports/nightly-report.json"))["all_green"]).lower())')"
           echo "all_green=$all_green" >> "$GITHUB_OUTPUT"
@@ -125,10 +149,12 @@ jobs:
           steps.digestdiff.outputs.all_green == 'true'
         run: |
           mkdir -p tests/live/compat
-          cp reports/nightly-digest.json tests/live/compat/openapi-last-known-good.json
+          # Commit the recovered RAW canary-leg digest (the last-known-good
+          # shape) — NOT the whole per-leg report.
+          cp reports/digest-canary.json tests/live/compat/openapi-last-known-good.json
           python - <<'PY'
           import datetime, json
-          digest = json.load(open("reports/nightly-digest.json"))
+          digest = json.load(open("reports/digest-canary.json"))
           meta = {
               "litellm_version": digest.get("spec_version"),
               "captured_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"),
