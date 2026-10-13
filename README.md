@@ -441,6 +441,17 @@ every leg. `.github/workflows/compat-matrix.yml` runs the same harness for
 `v1.97.0` and `v1.104.2` on PRs, pushes to `main` and on demand (one job per
 version; not a release gate).
 
+Every leg also captures a **consumed-surface digest** with
+`--digest-out PATH`: a normalized snapshot of the OpenAPI document the
+running proxy actually serves for the endpoints `litellm_as_code/api.py`
+consumes (descriptions/examples/markdown prose stripped, paths rendered as
+the client's f-string templates, `$ref`s expanded up to a depth cap).
+PR matrix legs upload the digest per version as a build artifact; run
+`python scripts/openapi_digest.py capture --base-url ... --api-key ... --out PATH`
+to grab one from any running proxy by hand. The digest is deterministic —
+same spec in, byte-identical JSON out — so it diffs like a lockfile (see
+the nightly canary section below).
+
 #### Nightly canary: today's latest stable
 
 A matrix leg pair goes stale within days of every merge — upstream ships a
@@ -459,6 +470,17 @@ green run link as evidence. All-green nights post nothing. `manage` supports
 workflow exposes both via `workflow_dispatch` inputs). The canary is
 informational, not a release gate; the floor pin is bumped deliberately in a
 PR after re-verification, never by cron.
+
+The nightly also diffs the canary leg's consumed-surface digest against the
+committed `tests/live/compat/openapi-last-known-good.json`
+(`scripts/openapi_digest.py diff`; seeded from a real leg, refreshed by the
+nightly itself on green, drift-free runs). A diff is a **watch signal, not
+a gate**: it is rendered into the tracking issue as informational context
+alongside the pytest verdict, and the refresh is skipped while drift is
+present — either because the server contract moved, or because
+litellm-as-code started consuming new endpoints. Review the drift, adapt
+the client/tests as needed, then let a clean nightly commit the new
+baseline.
 
 Caveats: variants A/B/C and the mutation round are skipped in the matrix —
 they assert enterprise-gated capabilities (team-admin member roles

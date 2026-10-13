@@ -328,12 +328,47 @@ def _render_tails(failed_legs: list[dict[str, object]], cap: int) -> str:
     return "\n\n".join(blocks)
 
 
+def _read_optional_text(path: str | None) -> str:
+    """Read the optional contract-drift text file; missing/empty → ''."""
+    if not path:
+        return ""
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ""
+
+
+def _digest_section(digest_text: str) -> str:
+    """Render contract drift (issue #26) as an informational body section.
+
+    Empty input → empty string (all-green-no-drift nights add nothing).
+    Drift alone never decides green/red — the live suites do; this section
+    is the early-warning surface proposed by #26.
+    """
+    text = digest_text.strip()
+    if not text:
+        return ""
+    return (
+        "\n### contract drift on the consumed surface (informational)\n\n"
+        "Normalized OpenAPI digest changed vs the committed last-known-good "
+        "(scripts/openapi_digest.py). Contract drift is NOT a break by "
+        "itself — the live suites above decide; a drift becomes actionable "
+        "if a nearby nightly leg turns red.\n\n"
+        f"```text\n{text}\n```\n"
+    )
+
+
 def red_title(failed_legs: list[dict[str, object]]) -> str:
     """Tracking-issue title — names the FIRST red leg (boundary of the break)."""
     return f"compat break: LiteLLM {failed_legs[0].get('version', '?')} (nightly canary red)"
 
 
-def red_body(raw_report: dict[str, object], failed_legs: list[dict[str, object]], run_url: str) -> str:
+def red_body(
+    raw_report: dict[str, object],
+    failed_legs: list[dict[str, object]],
+    run_url: str,
+    digest_text: str = "",
+) -> str:
     """The evidence body of a freshly filed tracking issue."""
     return (
         "The nightly canary is **red** — litellm-as-code does not converge on "
@@ -345,10 +380,16 @@ def red_body(raw_report: dict[str, object], failed_legs: list[dict[str, object]]
         "green run link.\n\n"
         f"### matrix\n\n{render_matrix_table(raw_report)}\n\n"
         f"### evidence\n\n{_render_tails(failed_legs, MAX_TAILS_CREATE)}\n"
+        f"{_digest_section(digest_text)}"
     )
 
 
-def still_red_comment(canary: str, failed_legs: list[dict[str, object]], run_url: str) -> str:
+def still_red_comment(
+    canary: str,
+    failed_legs: list[dict[str, object]],
+    run_url: str,
+    digest_text: str = "",
+) -> str:
     """Evidence body appended nightly while a break persists."""
     lines = [f"Nightly still red on LiteLLM **{canary}** — run: {run_url}"]
     for leg in failed_legs[:MAX_TAILS_COMMENT]:
@@ -363,16 +404,18 @@ def still_red_comment(canary: str, failed_legs: list[dict[str, object]], run_url
                 note=f" — {note}" if isinstance(note, str) and note else "",
             )
         )
-    return "\n".join(lines) + f"\n\n{_render_tails(failed_legs, MAX_TAILS_COMMENT)}\n"
+    return "\n".join(lines) + f"\n\n{_render_tails(failed_legs, MAX_TAILS_COMMENT)}\n" \
+        + _digest_section(digest_text)
 
 
-def recovered_comment(canary: str, run_url: str) -> str:
-    """Closing comment: the green run link is the recovery evidence."""
+def recovered_comment(canary: str, run_url: str, digest_text: str = "") -> str:
+    """Closing comment: green run link + any drift observed on the run."""
     return (
         f"**Green again** on LiteLLM `{canary}` — run: {run_url}\n\n"
         "Auto-closed as recovered (informational — not a release gate). If "
         "this same generation regresses again, the next red nightly opens a "
         "fresh tracking issue."
+        + _digest_section(digest_text)
     )
 
 
@@ -389,6 +432,7 @@ def create_tracking_issue(
     raw_report: dict[str, object],
     failed_legs: list[dict[str, object]],
     run_url: str,
+    digest_text: str = "",
 ) -> int:
     """Create the tracking issue; return its number (parsed from the URL)."""
     ensure_label(run, repo)
@@ -396,7 +440,7 @@ def create_tracking_issue(
         [
             "issue", "create", "-R", repo,
             "--title", red_title(failed_legs),
-            "--body", red_body(raw_report, failed_legs, run_url),
+            "--body", red_body(raw_report, failed_legs, run_url, digest_text),
             "--label", LABEL,
         ]
     )
@@ -462,6 +506,7 @@ def manage(args: argparse.Namespace) -> int:
     open_issue = open_canary_issue(run_gh, args.repo, args.label)
     action = decide_action(parsed.all_green, open_issue)
     raw_report = json.loads(Path(args.report).read_text(encoding="utf-8"))
+    digest_text = _read_optional_text(getattr(args, "digest_diff", None))
 
     if action == "noop":
         print(
@@ -472,12 +517,12 @@ def manage(args: argparse.Namespace) -> int:
 
     if action == "create":
         title = red_title(parsed.failed_legs)
-        body = red_body(raw_report, parsed.failed_legs, args.run_url)
+        body = red_body(raw_report, parsed.failed_legs, args.run_url, digest_text)
         if args.dry_run:
             print(f"[dry-run] would CREATE issue '{title}' (label {args.label})\n\n{body}")
             return 0
         number = create_tracking_issue(
-            run_gh, args.repo, raw_report, parsed.failed_legs, args.run_url
+            run_gh, args.repo, raw_report, parsed.failed_legs, args.run_url, digest_text
         )
         print(f"filed tracking issue #{number}: {title}")
         print("further red nights refresh this issue instead of duplicating it")
@@ -485,7 +530,7 @@ def manage(args: argparse.Namespace) -> int:
 
     assert open_issue is not None  # decide_action guarantees a number here
     if action == "comment":
-        body = still_red_comment(parsed.canary, parsed.failed_legs, args.run_url)
+        body = still_red_comment(parsed.canary, parsed.failed_legs, args.run_url, digest_text)
         if args.dry_run:
             print(f"[dry-run] would COMMENT on #{open_issue} (still red)\n\n{body}")
             return 0
@@ -494,7 +539,7 @@ def manage(args: argparse.Namespace) -> int:
         return 0
 
     # close
-    body = recovered_comment(parsed.canary, args.run_url)
+    body = recovered_comment(parsed.canary, args.run_url, digest_text)
     if args.dry_run:
         print(f"[dry-run] would CLOSE #{open_issue} as recovered\n\n{body}")
         return 0
@@ -537,6 +582,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_manage.add_argument(
         "--label", default=LABEL, metavar="NAME",
         help="tracking-issue label (default: compat-canary)",
+    )
+    p_manage.add_argument(
+        "--digest-diff", default=None, metavar="PATH",
+        help="optional rendered contract-drift text (issue #26) to embed in "
+        "the red body / still-red and recovering comments; read-only when "
+        "absent or pointing at a missing file",
     )
     p_manage.add_argument(
         "--simulate", choices=["red", "green"], default=None,

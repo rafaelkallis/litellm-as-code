@@ -390,6 +390,115 @@ def test_nightly_workflow_manage_step_invokes_the_subcommand():
     assert "inputs.simulate" in run_block and "--simulate" in run_block
 
 
+def test_nightly_workflow_wires_the_contract_digest_glue():
+    """Issue #26 glue: per-leg capture, drift diff, green-only refresh.
+
+    Run-blocks are test-blind in CI (a missing subcommand broke the whole
+    nightly once — run 38392163481), so the YAML glue is pinned here.
+    """
+    wf_path = Path(__file__).resolve().parents[1] / "tests" / ".." / ".github" / "workflows" / "compat-nightly.yml"
+    workflow = yaml.safe_load(wf_path.read_text(encoding="utf-8"))
+    steps = {s.get("name"): s for s in workflow["jobs"]["canary"]["steps"]}
+    # the leg step captures a digest next to the report
+    assert "--digest-out reports/nightly-digest.json" in steps["Run canary legs (floor + latest stable)"]["run"]
+    # the drift diff artifacts exist and the refresh gate is green+identical
+    diffstep = steps["Diff consumed-surface digest vs last-known-good"]
+    assert "openapi-last-known-good.json" in diffstep["run"]
+    assert "contract-drift.txt" in diffstep["run"]
+    refresh = steps["Refresh last-known-good digest (green + drift-free only)"]
+    assert "steps.digestdiff.outputs.code == '0'" in refresh["if"]
+    assert "steps.digestdiff.outputs.all_green == 'true'" in refresh["if"]
+    # the manage step forwards drift text when it exists
+    manage_run = steps["Manage compat-canary tracking issue"]["run"]
+    assert "--digest-diff" in manage_run and "contract-drift.txt" in manage_run
+    # repo write permission for the refresh commit
+    assert workflow["permissions"]["contents"] == "write"
+
+
+# ------------------------------------------------------- digest drift (#26)
+
+
+def _write_drift(tmp_path: Path, text: str = "POST /user/new:\n    …renamed param") -> Path:
+    path = tmp_path / "contract-drift.txt"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_digest_section_embedded_in_red_body_create(tmp_path, monkeypatch, capsys):
+    report = _write_report(tmp_path / "report.json")
+    drift = _write_drift(tmp_path)
+    gh = FakeGh([
+        ok("https://github.com/owner/repo/issues/21\n"),  # issue create (label exists)
+    ])
+    monkeypatch.setattr(canary, "open_canary_issue", lambda *a, **k: None)
+    monkeypatch.setattr(canary, "ensure_label", lambda *a, **k: None)
+    monkeypatch.setattr(canary, "run_gh", gh)
+    args = _manage_args(tmp_path, report, dry_run=False, digest_diff=str(drift))
+    assert canary.manage(args) == 0
+    body = " ".join(gh.joined())
+    assert "contract drift on the consumed surface" in body
+    assert "renamed param" in body
+    assert "NOT a break by itself" in body  # informational, never a gate
+
+
+def test_digest_section_embedded_in_still_red_comment(tmp_path, monkeypatch, capsys):
+    report = _write_report(tmp_path / "report.json")
+    drift = _write_drift(tmp_path)
+    gh = FakeGh([])  # comment only
+    monkeypatch.setattr(canary, "open_canary_issue", lambda *a, **k: 17)
+    monkeypatch.setattr(canary, "run_gh", gh)
+    args = _manage_args(tmp_path, report, dry_run=False, digest_diff=str(drift))
+    assert canary.manage(args) == 0
+    body = " ".join(gh.joined())
+    assert "contract drift on the consumed surface" in body
+
+
+def test_digest_section_embedded_in_recovering_close(tmp_path, monkeypatch, capsys):
+    green = _write_report(
+        tmp_path / "report.json",
+        all_green=True,
+        legs=[{
+            "version": "v1.97.0", "green": True, "note": "", "exit_code": 0,
+            "counts": {"passed": 9, "failed": 0, "errors": 0, "skipped": 4},
+            "no_tests": False, "tail": "",
+        }],
+    )
+    drift = _write_drift(
+        tmp_path, text="GET /user/list: parameters.0.schema.type: 'integer' -> 'string'"
+    )
+    gh = FakeGh([])
+    monkeypatch.setattr(canary, "open_canary_issue", lambda *a, **k: 17)
+    monkeypatch.setattr(canary, "run_gh", gh)
+    args = _manage_args(tmp_path, green, dry_run=False, digest_diff=str(drift))
+    assert canary.manage(args) == 0
+    body = " ".join(gh.joined())
+    assert "auto-closed as recovered" in body.lower() or "Green again" in body
+    assert "contract drift on the consumed surface" in body
+    assert "'integer' -> 'string'" in body
+
+
+def test_digest_diff_tolerates_missing_file_and_default_none(tmp_path, monkeypatch, capsys):
+    report = _write_report(tmp_path / "report.json")
+    # default None and missing file both behave identically: no drift section
+    for digest_diff in (None, str(tmp_path / "does-not-exist.txt")):
+        gh = FakeGh([])
+        monkeypatch.setattr(canary, "open_canary_issue", lambda *a, **k: 17)
+        monkeypatch.setattr(canary, "run_gh", gh)
+        args = _manage_args(tmp_path, report, digest_diff=digest_diff)
+        assert canary.manage(args) == 0
+        assert "contract drift" not in " ".join(gh.joined())
+
+
+def test_parser_has_digest_diff_optional():
+    parser = canary.build_parser()
+    args = parser.parse_args(["manage", "--report", "r.json", "--run-url", "u"])
+    assert args.digest_diff is None
+    args = parser.parse_args(
+        ["manage", "--report", "r.json", "--run-url", "u", "--digest-diff", "d.txt"]
+    )
+    assert args.digest_diff == "d.txt"
+
+
 
 def _manage_args(tmp_path: Path, report: Path, **overrides) -> SimpleNamespace:
     base = dict(
