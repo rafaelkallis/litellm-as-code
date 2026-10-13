@@ -1,5 +1,6 @@
 {
   "captured_at": "2026-10-13",
   "litellm_version": "1.105.0",
-  "note": "seeded by hand from a real compat-matrix leg (issue #26); refreshed by the nightly canary on green, drift-free runs"
+  "note": "refreshed by the nightly canary on a green, drift-free run (issue #26)",
+  "run_url": "https://github.com/rafaelkallis/litellm-as-code/actions/runs/38406056252"
 }
