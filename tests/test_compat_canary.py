@@ -16,6 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 _SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 
@@ -368,7 +369,26 @@ def test_write_github_calls_failures_surface(monkeypatch):
         canary.close_issue(boomed, "owner/repo", 3, "body")
 
 
-# ------------------------------------------------------------------ manage
+# ------------------------------------------------------------ CI glue guard
+
+
+def test_nightly_workflow_manage_step_invokes_the_subcommand():
+    """The 'manage' step's run block must name the manage subcommand.
+
+    Regression guard for run 38392163481: the shell array was built without
+    the subcommand, so the report path became the subcommand and argparse
+    died (exit 2) — the lifecycle would never have run in CI.
+    """
+    wf_path = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "compat-nightly.yml"
+    steps = yaml.safe_load(wf_path.read_text(encoding="utf-8"))["jobs"]["canary"]["steps"]
+    manage = next(s for s in steps if s.get("name") == "Manage compat-canary tracking issue")
+    run_block = manage["run"]
+    assert "python scripts/compat_canary.py" in run_block
+    assert "args=(manage" in run_block  # the subcommand survives the glue
+    assert "--report reports/nightly-report.json" in run_block
+    # the simulate choice must be guarded — a bare --simulate dies on schedule
+    assert "inputs.simulate" in run_block and "--simulate" in run_block
+
 
 
 def _manage_args(tmp_path: Path, report: Path, **overrides) -> SimpleNamespace:

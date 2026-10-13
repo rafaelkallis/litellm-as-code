@@ -115,7 +115,9 @@ jobs:
         # keeps --simulate out of real nightly runs (an empty --simulate arg
         # would die in argparse on schedule).
         run: |
-          args=(--report reports/nightly-report.json --label compat-canary)
+          args=(manage
+                --report reports/nightly-report.json
+                --label compat-canary)
           args+=("--run-url" "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}")
           if [ "${{ inputs.simulate }}" = "red" ] || [ "${{ inputs.simulate }}" = "green" ]; then
             args+=("--simulate" "${{ inputs.simulate }}")
