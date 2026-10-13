@@ -435,10 +435,30 @@ python scripts/compat_matrix.py          # default: v1.97.0, v1.104.2
 `--versions` takes a comma- or space-separated tag list; it also accepts
 `--port`, `--keep` (leave the last stack up for debugging), `--fail-fast`,
 `--pytest-args "..."` and `--set K=V` (extra env, forwarded to both the stack
-and pytest). It exits non-zero unless **every** version is green.
-`.github/workflows/compat-matrix.yml` runs the same harness for `v1.97.0` and
-`v1.104.2` on PRs, pushes to `main` and on demand (one job per version; not a
-release gate).
+and pytest). It exits non-zero unless **every** version is green, and
+`--report-out PATH` additionally writes a machine-readable JSON report of
+every leg. `.github/workflows/compat-matrix.yml` runs the same harness for
+`v1.97.0` and `v1.104.2` on PRs, pushes to `main` and on demand (one job per
+version; not a release gate).
+
+#### Nightly canary: today's latest stable
+
+A matrix leg pair goes stale within days of every merge — upstream ships a
+new minor roughly every 6–7 days. `.github/workflows/compat-nightly.yml`
+runs one leg pair **daily at 04:00 UTC**: the floor `v1.97.0` plus the latest
+**stable** LiteLLM tag, resolved live via
+`python scripts/compat_canary.py resolve` (`releases/latest`; rc/dev/
+pre-release tags are refused, with a release-list fallback).
+
+On red, `scripts/compat_canary.py manage` files (or refreshes) exactly one
+tracking issue labeled `compat-canary` with the matrix, failing pytest tails
+and the run link; on the next green run it auto-closes that issue with the
+green run link as evidence. All-green nights post nothing. `manage` supports
+`--dry-run` (print the write without touching GitHub) and
+`--simulate red|green` (rehearse the lifecycle without booting docker — the
+workflow exposes both via `workflow_dispatch` inputs). The canary is
+informational, not a release gate; the floor pin is bumped deliberately in a
+PR after re-verification, never by cron.
 
 Caveats: variants A/B/C and the mutation round are skipped in the matrix —
 they assert enterprise-gated capabilities (team-admin member roles

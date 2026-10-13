@@ -221,3 +221,25 @@ If we ever publish it beyond the repo (`gh skill`/marketplace garnish), it is an
 litellm's admin API is only loosely coupled to semver. We pin the proxy image
 used for integration testing; when adding/adjusting endpoints, note the
 litellm version it was verified against in the commit message and README.
+
+Because upstream ships ~4–5 minors/month, pinning alone discovers breaks only
+when somebody next pushes. The **nightly canary** (issue #25,
+`.github/workflows/compat-nightly.yml`) answers "does litellm-as-code
+converge on today's latest stable?" daily at 04:00 UTC:
+
+- resolve: `scripts/compat_canary.py resolve` — `releases/latest` tag (bare
+  `vX.Y.Z` only; rc/dev/pre-release refused), release-list fallback;
+- probe: one harness pair, floor `v1.97.0` + canary, via
+  `scripts/compat_matrix.py --report-out` (the JSON report is the lifecycle's
+  only input; the user's compose stack on 4000 is untouched — port 4001);
+- lifecycle: `scripts/compat_canary.py manage` keeps exactly ONE tracking
+  issue labeled `compat-canary` in sync — create on red (table + pytest
+  tails + run URL), comment while still red, comment+close on green, quiet on
+  all-green. `--dry-run` prints the would-be write; `--simulate red|green`
+  rehearses a verdict without booting docker. The open issue IS the state
+  (no persisted state files — fits §3).
+
+Floor-tag maintenance is deliberately NOT automated: bumping `v1.97.0`
+marks a generation as re-verified and must be a deliberate PR (a red floor
+leg without a red canary is filed by the same lifecycle — it means a
+regression we should look at, not an upstream break).

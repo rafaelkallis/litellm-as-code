@@ -1,0 +1,129 @@
+# Nightly compat canary (issue #25): one leg pair per day — the floor release
+# pin and TODAY'S latest stable LiteLLM — through the same harness the PR/push
+# matrix uses (scripts/compat_matrix.py). A red canary means litellm-as-code
+# does not yet converge on the current stable generation; it auto-files/
+# refreshes exactly ONE 'compat-canary' tracking issue with the run link and
+# pytest tails (scripts/compat_canary.py manage), and the next green run
+# auto-closes it. Informational — NOT a release gate. The floor pin below is
+# bumped by hand, with a re-verification PR (AGENTS.md §9), never by cron.
+name: LiteLLM nightly compat canary
+
+on:
+  schedule:
+    - cron: "0 4 * * *" # 04:00 UTC daily
+  workflow_dispatch:
+    inputs:
+      canary_tag:
+        description: "Override the auto-resolved latest-stable tag (e.g. v1.105.0)"
+        required: false
+        default: ""
+      simulate:
+        description: "Rehearse the tracking-issue lifecycle without docker"
+        required: false
+        default: "none"
+        type: choice
+        options:
+          - none
+          - red
+          - green
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: compat-nightly
+  cancel-in-progress: false # a day's probe must never be dropped mid-run
+
+jobs:
+  canary:
+    name: Floor v1.97.0 vs latest stable
+    runs-on: ubuntu-latest
+    timeout-minutes: 150 # two legs; the matrix's 45-min/leg budget + pulls
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install (editable + dev extras)
+        run: pip install -e ".[dev]"
+
+      - name: Resolve canary tag
+        id: canary
+        if: ${{ inputs.simulate != 'red' && inputs.simulate != 'green' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LITELLM_CANARY_TAG: ${{ inputs.canary_tag }}
+        run: |
+          tag="$(python scripts/compat_canary.py resolve)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "resolved canary: $tag"
+
+      # docker + the compose plugin are preinstalled on ubuntu-latest runners.
+      - name: Run canary legs (floor + latest stable)
+        id: leg
+        if: ${{ inputs.simulate != 'red' && inputs.simulate != 'green' }}
+        continue-on-error: true # the lifecycle step below runs on red too
+        run: >-
+          python scripts/compat_matrix.py
+          --versions v1.97.0,${{ steps.canary.outputs.tag }}
+          --port 4001
+          --report-out reports/nightly-report.json
+
+      - name: Fabricate rehearsal report (--simulate)
+        if: ${{ inputs.simulate == 'red' || inputs.simulate == 'green' }}
+        run: |
+          python - <<'PY'
+          import importlib.util
+          import sys
+          from pathlib import Path
+
+          # dataclass processing resolves class-module lookups at exec time,
+          # so the module MUST be registered before exec_module (see the
+          # file-path import recipes in tests/test_compat_matrix.py).
+          spec = importlib.util.spec_from_file_location("compat_matrix", "scripts/compat_matrix.py")
+          cm = importlib.util.module_from_spec(spec)
+          sys.modules["compat_matrix"] = cm
+          spec.loader.exec_module(cm)
+          pair = cm.parse_versions("v1.97.0,v1.105.0")
+          legs = [
+              cm.LegResult(version="v1.97.0", green=True, exit_code=0, counts={"passed": 9, "skipped": 4}),
+              cm.LegResult(version="v1.105.0", green=True, exit_code=0, counts={"passed": 10, "skipped": 3}),
+          ]
+          cm.write_report(Path("reports/nightly-report.json"), cm.report_payload(pair, legs, []))
+          print("fabricated a green rehearsal report; --simulate decides the lifecycle")
+          PY
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-report
+          path: reports/nightly-report.json
+          if-no-files-found: warn
+
+      - name: Manage compat-canary tracking issue
+        id: lifecycle
+        if: always() # green legs matter too: that is the auto-close path
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # NB: inputs.* render as '' on events without inputs, so the -n guard
+        # keeps --simulate out of real nightly runs (an empty --simulate arg
+        # would die in argparse on schedule).
+        run: |
+          args=(--report reports/nightly-report.json --label compat-canary)
+          args+=("--run-url" "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}")
+          if [ "${{ inputs.simulate }}" = "red" ] || [ "${{ inputs.simulate }}" = "green" ]; then
+            args+=("--simulate" "${{ inputs.simulate }}")
+          fi
+          python scripts/compat_canary.py "${args[@]}"
+
+      - name: Fail the run on a red canary (scheduled-run heartbeat)
+        if: always() && steps.leg.outcome == 'failure'
+        run: |
+          echo "::error title=canary red::litellm-as-code does not converge on ${{ steps.canary.outputs.tag }} — see the compat-canary tracking issue"
+          exit 1

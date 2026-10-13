@@ -18,6 +18,7 @@ Examples::
     .venv/bin/python scripts/compat_matrix.py                  # default matrix
     .venv/bin/python scripts/compat_matrix.py --versions v1.97.0 v1.104.2
     .venv/bin/python scripts/compat_matrix.py --versions v1.104.2 --keep
+    .venv/bin/python scripts/compat_matrix.py --report-out reports/matrix.json
 
 Exit code: 0 iff EVERY requested version is green, 1 otherwise (so CI fails
 loudly), 2 on usage errors.
@@ -26,6 +27,7 @@ loudly), 2 on usage errors.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shlex
@@ -137,7 +139,12 @@ def _wait_healthy(env: dict[str, str]) -> bool:
 
 @dataclass
 class LegResult:
-    """Outcome of one matrix version."""
+    """Outcome of one matrix version.
+
+    ``--report-out`` serializes every field of this dataclass (keys mirror
+    the field names; see ``report_payload``) — scripts/compat_canary.py
+    consumes that JSON for the nightly tracking-issue lifecycle.
+    """
 
     version: str
     green: bool = False
@@ -284,7 +291,55 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="K=V",
         help="extra env var forwarded to BOTH the compose stack and pytest (repeatable)",
     )
+    parser.add_argument(
+        "--report-out",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="after the matrix, write a JSON report of every leg (version, "
+        "green, note, exit_code, counts, no_tests, tail) to PATH — consumed by "
+        "scripts/compat_canary.py for the nightly tracking-issue lifecycle",
+    )
     return parser
+
+
+def report_payload(
+    versions: list[str],
+    results: list[LegResult],
+    not_run: list[str],
+) -> dict[str, object]:
+    """Machine-readable matrix outcome (``--report-out``; see module docstring).
+
+    Kept a pure function (of already-collected results) and byte-deterministic
+    (``json.dumps(sort_keys=True)``) so the same matrix always produces an
+    identical file — diffs between two nightly reports are purely semantic.
+    """
+    return {
+        "harness": "compat_matrix",
+        "versions": list(versions),
+        "all_green": bool(results) and all(result.green for result in results),
+        "ran_all": not bool(not_run),
+        "legs": [
+            {
+                "version": result.version,
+                "green": result.green,
+                "note": result.note,
+                "exit_code": result.exit_code,
+                "counts": result.counts,
+                "no_tests": result.no_tests,
+                "tail": result.tail,
+            }
+            for result in results
+        ],
+        "not_run": list(not_run),
+    }
+
+
+def write_report(path: Path, payload: dict[str, object]) -> None:
+    """Write the JSON report; deterministic bytes (sort_keys, stable indent)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(payload, sort_keys=True, indent=2) + "\n"
+    path.write_text(text, encoding="utf-8")
 
 
 def _print_summary(results: list[LegResult], not_run: list[str]) -> bool:
@@ -326,6 +381,7 @@ def run_matrix(
     pytest_extra: list[str],
     keep: bool,
     fail_fast: bool,
+    report_out: Path | None = None,
 ) -> int:
     if extra_env:
         rendered = ", ".join(f"{k}={v}" for k, v in sorted(extra_env.items()))
@@ -371,6 +427,8 @@ def run_matrix(
             f"tear it down with:      docker compose -f tests/live/proxy/compose.yml down -v"
         )
     not_run = versions[len(results):] if fail_fast else []
+    if report_out is not None:
+        write_report(report_out, report_payload(versions, results, not_run))
     all_green = _print_summary(results, not_run)
     return 0 if all_green else 1
 
@@ -395,6 +453,7 @@ def main(argv: list[str] | None = None) -> int:
         pytest_extra=pytest_extra,
         keep=args.keep,
         fail_fast=args.fail_fast,
+        report_out=args.report_out,
     )
 
 
