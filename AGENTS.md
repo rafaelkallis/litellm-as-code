@@ -87,6 +87,25 @@ the manageable fields (see per-resource `COMPARABLE` lists); runtime metrics
 (`spend`, `updated_at`, `status`, `budget_reset_at`) are read-only — do not
 add them to diffs.
 
+Capabilities (`litellm_as_code/capabilities.py`, issue #27): one run-resolved
+`Capabilities` per client is the single home of every capability fact.
+Resolution order per capability: **(1) version hint** — cheap, orderable;
+hints only *order probes* and never alone decide behavior (upstream reverts
+and backports happen) — then **(2) behavior probe** — the real call's
+outcome upgrades unknowns — then **(3) degrade + warn**; hard-fail only when
+the spec itself requires the capability. Resolution is lazy: an org-only
+path pays no OpenAPI probe, and the org probe IS the first real
+`/organization/list` call (no extra HTTP round-trip, export traffic
+unchanged). The version probe is at most one cached `GET /openapi.json` per
+run. No `proxy_version()` tuple comparisons may exist outside
+`capabilities.py` (grep-pinned test `tests/test_capabilities.py`).
+
+| capability | fact | resolution order | verified against | `None`/unknown means |
+|---|---|---|---|---|
+| `probe_available` | `GET /openapi.json` serves a parseable `info.version` | single cached probe | v1.97.0, v1.104.2 | docs disabled → every version hint unknown; a state, never a gate (behavior probing stays on) |
+| `model_costs_persist` | per-deployment costs persist iff generation < 1.102 | 1. version hint (`_COSTS_PERSIST_BELOW`, right-padded compare) → 2. apply-then-verify (apply runs only) | v1.97.0 (persist), v1.104.2 (server-derived) | OpenAPI probe unavailable → the models acceptance phase accepts what a cost-only PATCH did not stick (the ONE fallback home); **`--dry-run` keeps showing the cost update in that fallback** |
+| `org_endpoints_available` | `/organization` router enterprise-gated (unlicensed, >= 1.102) | behavior probe on the FIRST org listing — no version gate (a *licensed* >= 1.102 proxy exposes orgs) | v1.97.0 (ungated), v1.104.2 unlicensed (403) | unknown until the first org call; a gate-shaped 403 upgrades to False (tolerated: degrade + warn; hard error only when the spec declares organizations) |
+
 Eventual consistency: after `POST /user/new` / `/team/new` / `/model/new`, a
 read-back can 404 briefly. `api.LiteLLMClient` retries with exponential
 backoff. Keep new resources on the retry path.

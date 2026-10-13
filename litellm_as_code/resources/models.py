@@ -10,13 +10,15 @@ converts to per-token when sending to the API, and back when comparing.
 
 Cost acceptance (LiteLLM >= 1.102): since v1.102.0 the proxy does not persist
 per-deployment costs, so a cost-only drift can never converge by patching.
-A read-only version probe (LiteLLMClient.proxy_version, GET /openapi.json ->
-info.version) detects the proxy generation up front: on >= 1.102 the cost
-keys are dropped from the change set and the drift is accepted with a
-message, so BOTH apply and --dry-run converge without patching. When the
-probe is unavailable the fallback is an apply-then-verify acceptance on
-non-dry-run runs; --dry-run cannot verify (it patches nothing), so in THAT
-fallback a dry-run keeps showing the cost update.
+The decision flows from litellm_as_code.capabilities (the single home of every
+capability fact, including this cutoff hint): when the hint announces a
+>= 1.102 generation the cost keys are dropped from the change set and the
+drift is accepted with a message, so BOTH apply and --dry-run converge
+without patching. When the hint is unavailable (OpenAPI probe disabled) the
+fallback is an apply-then-verify acceptance on non-dry-run runs — the ONE
+place that fallback exists (this acceptance phase); --dry-run cannot verify
+(it patches nothing), so in THAT fallback a dry-run keeps showing the cost
+update.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..api import LiteLLMClient
+from ..capabilities import capabilities
 from ..log import warn
 from ..types import Action, Diff
 
@@ -48,6 +51,8 @@ _COST_KEYS = ("input_cost_per_token", "output_cost_per_token")
 #   reads them back as null even immediately after create/patch.
 # - On the pinned v1.97.0 generation (our integration image) costs DO
 #   round-trip.
+# - The version hint for this cutoff lives in litellm_as_code.capabilities
+#   (_COSTS_PERSIST_BELOW) — like every capability fact, in one place only.
 # Effect otherwise: perpetual `model X would be updated (input_cost_per_token:
 # 2e-06 -> None, ...)` — the plan never converges, --dry-run wedges at exit
 # code 2 forever, and apply sends a dead PATCH every run (harmless, kept).
@@ -57,20 +62,6 @@ _ACCEPTED_PRICING_MESSAGE = (
     ">= 1.102) does not persist per-deployment costs; pricing is "
     "server-derived from the proxy's cost map"
 )
-
-
-def _costs_persist(client: LiteLLMClient) -> bool | None:
-    """True when the proxy generation persists per-deployment model costs.
-
-    False on LiteLLM >= 1.102 (costs are server-derived there); None when the
-    probe is unavailable and the caller must fall back to behavior probing.
-    """
-    version = client.proxy_version()
-    if not isinstance(version, tuple):  # None (probe unavailable) or malformed
-        return None
-    # Pad RIGHT so a truncated probe ("1.102" -> (1, 102)) is not element-wise
-    # compared as OLDER than 1.102 (shortest tuple wins that comparison).
-    return version + (0,) * (3 - len(version)) < (1, 102, 0)
 
 
 def _resolve_model_id(remote: dict[str, Any]) -> str | None:
@@ -275,9 +266,10 @@ def reconcile_models(
 ) -> list[Diff]:
     diffs: list[Diff] = []
     live = {m["model_name"]: m for m in client.list_models() if m.get("model_name")}
-    # Capability probe (read-only): on >= 1.102 per-deployment costs are
-    # unmanageable, so apply AND --dry-run converge; None -> fallback below.
-    costs_persist = _costs_persist(client)
+    # Capability decision (litellm_as_code.capabilities, memoized once per
+    # run): on >= 1.102 per-deployment costs are unmanageable, so apply AND
+    # --dry-run converge; None -> the apply-then-verify fallback below.
+    costs_persist = capabilities(client).model_costs_persist
     cost_accept_warned = False
     # (Diff, desired) pairs patched for cost-only drift this run; their Diffs
     # may be downgraded to accepted NOOPs by the verification phase below.
