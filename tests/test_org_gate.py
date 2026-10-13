@@ -6,7 +6,10 @@ HTTP 403 with a body like "Organizations are only available for LiteLLM
 Enterprise users" (embedded verbatim in the ReconcilerError text that
 LiteLLMClient._request raises). Proves: org-free specs degrade gracefully, a
 declared org fails with an actionable message, and anything that is not
-unambiguously the gate (missing marker, 5xx) propagates unchanged.
+unambiguously the gate (missing marker, 5xx) propagates unchanged. The
+classification and the tolerant listing live in litellm_as_code.capabilities
+(issue #27) — shared by the reconciler and the exporter; these tests exercise
+it through the public surfaces.
 """
 
 from __future__ import annotations

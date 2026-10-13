@@ -23,6 +23,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..api import LiteLLMClient
+from ..capabilities import capabilities
 from ..diff import comparable_diff
 from ..log import warn
 from ..types import Action, Diff, ReconcilerError
@@ -31,38 +32,6 @@ from .identity import find_row, remote_id_from_live
 from .members import reconcile_members
 
 COMPARABLE = ["organization_alias", "models"]
-
-# Since LiteLLM v1.102.0 the ENTIRE /organization router is wrapped with a
-# dependency that gates it on an Enterprise license; on unlicensed
-# self-hosted proxies every /organization/* call answers HTTP 403 with a body
-# like "Organizations are only available for LiteLLM Enterprise users", and
-# LiteLLMClient._request embeds that body verbatim in the ReconcilerError
-# text. Tolerance requires EVERY marker below (case-insensitive) in the error
-# text — a plain 401, a 500, or a 403 with a different body must never be
-# swallowed as the gate (see tests/test_org_gate.py).
-ORG_GATE_MARKERS = ("403", "enterprise")
-
-
-def is_org_gate_error(exc: ReconcilerError) -> bool:
-    """True only when the error text carries every enterprise-gate marker."""
-    text = str(exc).lower()
-    return all(marker in text for marker in ORG_GATE_MARKERS)
-
-
-def _list_organizations_tolerating_gate(
-    client: LiteLLMClient,
-) -> list[dict[str, Any]] | None:
-    """list_organizations(), or None when the proxy 403'd the enterprise gate.
-
-    Any other ReconcilerError (401, 500, a 403 without the gate body, ...)
-    propagates unchanged.
-    """
-    try:
-        return client.list_organizations()
-    except ReconcilerError as exc:
-        if is_org_gate_error(exc):
-            return None
-        raise
 
 
 def reconcile_organizations(
@@ -78,11 +47,14 @@ def reconcile_organizations(
     LiteLLM Enterprise gate: on unlicensed proxies (>=1.102.0) every
     /organization/* call 403s. With no organizations declared the gate is
     tolerated (empty list, stderr warning); with organizations declared the
-    reconciliation cannot converge and an actionable error is raised.
+    reconciliation cannot converge and an actionable error is raised. The
+    gate's classification and tolerant listing live in
+    `litellm_as_code.capabilities` — the single home, shared with the
+    exporter (issue #27).
     """
     diffs: list[Diff] = []
     reconciled: list[dict[str, Any]] = []
-    live = _list_organizations_tolerating_gate(client)
+    live = capabilities(client).list_organizations()
     if live is None:
         if spec_entries:
             raise ReconcilerError(
@@ -124,7 +96,7 @@ def reconcile_organizations(
                 # ever 403'd the gate, `live` would read empty and "live is
                 # empty" unresolves the id below — a hard error, never a
                 # silent member drop.
-                live = _list_organizations_tolerating_gate(client) or []
+                live = capabilities(client).list_organizations() or []
                 remote_org_id = remote_id_from_live(
                     live,
                     id_field="organization_id",

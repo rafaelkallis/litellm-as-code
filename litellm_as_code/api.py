@@ -48,6 +48,10 @@ class LiteLLMClient:
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
         self._proxy_version_cache: Any = _PROBE_PENDING
+        # Run-resolved Capabilities (litellm_as_code.capabilities), assigned
+        # by capabilities() and memoized here — sentinel-pattern sibling of
+        # the version probe cache above.
+        self._capabilities_cache: Any = None
 
     def _url(self, path: str) -> str:
         return urljoin(self.base_url, path.lstrip("/"))

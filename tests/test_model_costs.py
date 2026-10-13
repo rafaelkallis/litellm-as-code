@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import json
 
+from litellm_as_code.capabilities import capabilities
 from litellm_as_code.reconciler import reconcile
-from litellm_as_code.resources.models import _costs_persist
 from litellm_as_code.types import Action
 
 from tests import make_fake_client
@@ -330,7 +330,7 @@ def test_version_probe_mixed_drift_reports_only_appliable_deltas(tmp_path):
 
 
 class _VersionStub:
-    """Minimal client double for direct _costs_persist probing."""
+    """Minimal client double: only the capability probe matters."""
 
     def __init__(self, version):
         self._version = version
@@ -339,16 +339,18 @@ class _VersionStub:
         return self._version
 
 
-def test_costs_persist_version_compare_pads_right():
+def test_costs_persist_hint_pads_right():
     """The >= 1.102 cutoff is a RIGHT-PADDED tuple compare: a truncated probe
-    tuple like "1.102" -> (1, 102) must not read as older-than-1.102."""
-    assert _costs_persist(_VersionStub((1, 101, 9))) is True
-    assert _costs_persist(_VersionStub((1, 101))) is True
-    assert _costs_persist(_VersionStub((1, 102))) is False
-    assert _costs_persist(_VersionStub((1, 102, 0))) is False
-    assert _costs_persist(_VersionStub((1, 104, 2))) is False
-    assert _costs_persist(_VersionStub((1, 104, 2, 1))) is False
-    assert _costs_persist(_VersionStub(None)) is None
+    tuple like "1.102" -> (1, 102) must not read as older-than-1.102. Lives
+    in litellm_as_code.capabilities since issue #27 (single home).
+    """
+    assert capabilities(_VersionStub((1, 101, 9))).model_costs_persist is True
+    assert capabilities(_VersionStub((1, 101))).model_costs_persist is True
+    assert capabilities(_VersionStub((1, 102))).model_costs_persist is False
+    assert capabilities(_VersionStub((1, 102, 0))).model_costs_persist is False
+    assert capabilities(_VersionStub((1, 104, 2))).model_costs_persist is False
+    assert capabilities(_VersionStub((1, 104, 2, 1))).model_costs_persist is False
+    assert capabilities(_VersionStub(None)).model_costs_persist is None
 
 
 def test_verification_race_vanished_model_never_accepted(tmp_path):
