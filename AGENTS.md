@@ -239,6 +239,20 @@ converge on today's latest stable?" daily at 04:00 UTC:
   rehearses a verdict without booting docker. The open issue IS the state
   (no persisted state files — fits §3).
 
+**Consumed-surface digest** (issue #26): `scripts/openapi_digest.py` derives
+the endpoint set from `api.py` itself (regex/tokenizer over the client
+source, asserted equal to the real endpoints in tests), captures the proxy's
+OpenAPI doc per matrix leg (`compat_matrix.py --digest-out`), normalizes it
+(descriptions/examples/x-*/markdown prose pruned, f-string path templates,
+`$ref`s expanded to a depth cap) and emits deterministic, byte-stable JSON.
+`compat_matrix.py`, the PR matrix workflow and the nightly all wire it.
+The nightly diffs the canary leg's digest against the committed
+`tests/live/compat/openapi-last-known-good.json` (+ `.meta.json` sidecar)
+and appends it to the tracking issue as INFORMATIONAL; the last-known-good
+is refreshed by the nightly only on green, drift-free runs — treat drift as
+a watch signal (server contract moved, or `api.py` gained endpoints), never
+as a break verdict by itself.
+
 Floor-tag maintenance is deliberately NOT automated: bumping `v1.97.0`
 marks a generation as re-verified and must be a deliberate PR (a red floor
 leg without a red canary is filed by the same lifecycle — it means a
