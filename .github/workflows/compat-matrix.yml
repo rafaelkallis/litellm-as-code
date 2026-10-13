@@ -50,3 +50,15 @@ jobs:
           python scripts/compat_matrix.py
           --versions ${{ matrix.litellm-version }}
           --port 4001
+          --digest-out reports/digest-${{ matrix.litellm-version }}.json
+
+      # Issue #26: the PR matrix legs ship the consumed-surface digest as an
+      # artifact so contract drift is inspectable on pull requests too (the
+      # NIGHTLY run is what diffs against the committed last-known-good).
+      - name: Upload digest artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.litellm-version }}
+          path: reports/digest-${{ matrix.litellm-version }}.json
+          if-no-files-found: warn

@@ -111,3 +111,111 @@ def test_parser_exposes_report_out_and_defaults_to_none():
     assert defaults.report_out is None
     explicit = parser.parse_args(["--report-out", "reports/nightly.json"])
     assert str(explicit.report_out) == "reports/nightly.json"
+
+
+# ------------------------------------------------------------------ digest
+# (--digest-out: per-leg OpenAPI contract captures — scripts/openapi_digest.py;)
+
+
+def _canned_digest(version: str, spec_version: str = "1.97.0") -> dict:
+    return {
+        "version": version,
+        "digest": {
+            "harness": "openapi_digest",
+            "format": 1,
+            "spec_version": spec_version,
+            "endpoints": {"GET /user/list": {"absent": True}},
+        },
+    }
+
+
+def test_run_matrix_writes_digest_document_per_leg(monkeypatch, tmp_path):
+    calls: list[str] = []
+
+    def fake_leg(index, total, version, *args, **kwargs):
+        calls.append(version)
+        return _leg(version=version)
+
+    monkeypatch.setattr(compat_matrix, "run_leg", fake_leg)
+    monkeypatch.setattr(
+        compat_matrix,
+        "digest_after_leg",
+        lambda port, key, version: _canned_digest(version),
+    )
+    monkeypatch.setattr(
+        compat_matrix, "_compose", lambda env, *a, **k: type("P", (), {"returncode": 0})()
+    )
+    target = tmp_path / "digest-report.json"
+    code = compat_matrix.run_matrix(
+        port=4001,
+        versions=["v1.97.0", "v1.105.0"],
+        master_key="k",
+        extra_env={},
+        pytest_extra=[],
+        keep=False,
+        fail_fast=False,
+        digest_out=target,
+    )
+    assert code == 0
+    assert calls == ["v1.97.0", "v1.105.0"]
+    document = json.loads(target.read_text(encoding="utf-8"))
+    assert document["harness"] == "openapi_digest_report"
+    assert [leg["version"] for leg in document["legs"]] == ["v1.97.0", "v1.105.0"]
+    assert document["legs"][0]["digest"]["spec_version"] == "1.97.0"
+
+
+def test_digest_report_is_byte_deterministic(monkeypatch, tmp_path):
+    monkeypatch.setattr(compat_matrix, "run_leg", lambda *a, **k: _leg())
+    monkeypatch.setattr(
+        compat_matrix, "digest_after_leg", lambda port, key, version: _canned_digest(version)
+    )
+    monkeypatch.setattr(
+        compat_matrix, "_compose", lambda env, *a, **k: type("P", (), {"returncode": 0})()
+    )
+    one = tmp_path / "a.json"
+    two = tmp_path / "b.json"
+    for target in (one, two):
+        compat_matrix.run_matrix(
+            port=4001, versions=["v1.97.0"], master_key="k", extra_env={},
+            pytest_extra=[], keep=False, fail_fast=False, digest_out=target,
+        )
+    assert one.read_bytes() == two.read_bytes()
+
+
+def test_digest_capture_failure_is_recorded_not_fatal(monkeypatch, tmp_path):
+    monkeypatch.setattr(compat_matrix, "run_leg", lambda *a, **k: _leg())
+    monkeypatch.setattr(
+        compat_matrix,
+        "digest_after_leg",
+        lambda port, key, version: {
+            "version": version,
+            "capture_error": "URLError: connection refused",
+        },
+    )
+    monkeypatch.setattr(
+        compat_matrix, "_compose", lambda env, *a, **k: type("P", (), {"returncode": 0})()
+    )
+    target = tmp_path / "digest.json"
+    compat_matrix.run_matrix(
+        port=4001, versions=["v1.97.0"], master_key="k", extra_env={},
+        pytest_extra=[], keep=False, fail_fast=False, digest_out=target,
+    )
+    document = json.loads(target.read_text(encoding="utf-8"))
+    assert document["legs"][0]["capture_error"].startswith("URLError")
+    assert "digest" not in document["legs"][0]
+
+
+def test_digest_after_leg_swallows_fetch_errors(monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("proxy vanished")
+
+    monkeypatch.setattr(compat_matrix._digest, "fetch_spec", boom)
+    entry = compat_matrix.digest_after_leg(4001, "k", "v1.97.0")
+    assert entry["capture_error"].startswith("RuntimeError: proxy vanished")
+
+
+def test_parser_exposes_digest_out_and_defaults_to_none():
+    parser = compat_matrix.build_parser()
+    assert parser.parse_args([]).digest_out is None
+    explicit = parser.parse_args(["--digest-out", "reports/digest.json"])
+    assert str(explicit.digest_out) == "reports/digest.json"

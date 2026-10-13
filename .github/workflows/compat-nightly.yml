@@ -28,7 +28,7 @@ on:
           - green
 
 permissions:
-  contents: read
+  contents: write # refreshes the committed last-known-good digest (green only)
   issues: write
 
 concurrency:
@@ -73,6 +73,7 @@ jobs:
           --versions v1.97.0,${{ steps.canary.outputs.tag }}
           --port 4001
           --report-out reports/nightly-report.json
+          --digest-out reports/nightly-digest.json
 
       - name: Fabricate rehearsal report (--simulate)
         if: ${{ inputs.simulate == 'red' || inputs.simulate == 'green' }}
@@ -98,12 +99,64 @@ jobs:
           print("fabricated a green rehearsal report; --simulate decides the lifecycle")
           PY
 
-      - name: Upload report artifact
+      # Issue #26: contract-evolution watch. The digest diff is a WATCH
+      # signal — exit 2 (drift) must not fail the run; the live suites above
+      # decide green/red. The last-known-good digest is refreshed ONLY on a
+      # green, drift-free, non-rehearsal run (see the commit step below).
+      - name: Diff consumed-surface digest vs last-known-good
+        id: digestdiff
+        if: ${{ inputs.simulate != 'red' && inputs.simulate != 'green' }}
+        run: |
+          set +e
+          python scripts/openapi_digest.py diff \
+            --old tests/live/compat/openapi-last-known-good.json \
+            --new reports/nightly-digest.json \
+            --text-out reports/contract-drift.txt
+          code=$?
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          all_green="$(python -c 'import json; print(str(json.load(open("reports/nightly-report.json"))["all_green"]).lower())')"
+          echo "all_green=$all_green" >> "$GITHUB_OUTPUT"
+          echo "digest diff exit: $code (0 identical / 2 drift), report all_green=$all_green"
+
+      - name: Refresh last-known-good digest (green + drift-free only)
+        if: >-
+          always() &&
+          steps.digestdiff.outputs.code == '0' &&
+          steps.digestdiff.outputs.all_green == 'true'
+        run: |
+          mkdir -p tests/live/compat
+          cp reports/nightly-digest.json tests/live/compat/openapi-last-known-good.json
+          python - <<'PY'
+          import datetime, json
+          digest = json.load(open("reports/nightly-digest.json"))
+          meta = {
+              "litellm_version": digest.get("spec_version"),
+              "captured_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"),
+              "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "note": "refreshed by the nightly canary on a green, drift-free run (issue #26)",
+          }
+          with open("tests/live/compat/openapi-last-known-good.meta.json", "w") as fh:
+              json.dump(meta, fh, indent=2, sort_keys=True)
+              fh.write("\n")
+          print("sidecar written:", json.dumps(meta, sort_keys=True))
+          PY
+          git config user.name "compat-canary bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests/live/compat/openapi-last-known-good.json tests/live/compat/openapi-last-known-good.meta.json
+          git diff --cached --quiet && echo "digest unchanged — nothing to commit" || {
+            git commit -m "chore(compat): refresh last-known-good consumed-surface digest [skip ci]"
+            git push
+          }
+
+      - name: Upload report + digest artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: nightly-report
-          path: reports/nightly-report.json
+          path: |
+            reports/nightly-report.json
+            reports/nightly-digest.json
+            reports/contract-drift.txt
           if-no-files-found: warn
 
       - name: Manage compat-canary tracking issue
@@ -121,6 +174,9 @@ jobs:
           args+=("--run-url" "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}")
           if [ "${{ inputs.simulate }}" = "red" ] || [ "${{ inputs.simulate }}" = "green" ]; then
             args+=("--simulate" "${{ inputs.simulate }}")
+          fi
+          if [ -s reports/contract-drift.txt ]; then
+            args+=("--digest-diff" reports/contract-drift.txt)
           fi
           python scripts/compat_canary.py "${args[@]}"
 

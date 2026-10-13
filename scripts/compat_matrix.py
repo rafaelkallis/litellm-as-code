@@ -39,6 +39,9 @@ from pathlib import Path
 from typing import Iterable
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT / "scripts") not in sys.path:  # sibling-script import (tests import by path)
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+import openapi_digest as _digest  # noqa: E402  (must follow the sys.path fix)
 COMPOSE_FILE = REPO_ROOT / "tests" / "live" / "proxy" / "compose.yml"
 LITELLM_CONTAINER = "litellm-as-code-tests-litellm"
 DEFAULT_VERSIONS = "v1.97.0,v1.104.2"  # pinned release gate + current stable
@@ -50,6 +53,7 @@ PYTEST_TIMEOUT_S = 900.0
 PYTEST_TARGET = "tests/live"
 PYTEST_MARKER = "integration and not slow"
 TAIL_LINES = 60
+DIGEST_TIMEOUT_S = 60.0  # GET /openapi.json after the leg (proxy healthy)
 
 _TAG_RE = re.compile(r"^v\d+\.\d+(?:\.\d+)?(?:[-+][\w.]+)?$")
 
@@ -300,6 +304,16 @@ def build_parser() -> argparse.ArgumentParser:
         "green, note, exit_code, counts, no_tests, tail) to PATH — consumed by "
         "scripts/compat_canary.py for the nightly tracking-issue lifecycle",
     )
+    parser.add_argument(
+        "--digest-out",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="capture a normalized OpenAPI digest of the consumed endpoints "
+        "(scripts/openapi_digest.py) from each leg's healthy proxy and write "
+        "one JSON file with a digest per leg — the nightly canary diffs this "
+        "against the committed last-known-good (issue #26)",
+    )
     return parser
 
 
@@ -342,6 +356,30 @@ def write_report(path: Path, payload: dict[str, object]) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def digest_after_leg(
+    port: int,
+    master_key: str,
+    version: str,
+) -> dict[str, object]:
+    """Capture the consumed-surface digest while this leg's proxy is healthy.
+
+    Never raises: a fetch/prune failure is returned as a capture_error entry
+    so one bad spec cannot kill the whole nightly (the digest is a watch
+    signal, not a gate).  Deterministic serialization is inherited from
+    scripts/openapi_digest.py.
+    """
+    try:
+        spec = _digest.fetch_spec(f"http://localhost:{port}", master_key, timeout=DIGEST_TIMEOUT_S)
+    except Exception as exc:  # surfaced verbatim; absences stay actionable
+        return {"version": version, "capture_error": f"{type(exc).__name__}: {exc}"}
+    return {"version": version, "digest": _digest.digest_payload(spec)}
+
+
+def digest_payload_document(legs: list[dict[str, object]]) -> dict[str, object]:
+    """Digest report payload ({harness, legs: [{version, digest|capture_error}]})."""
+    return {"harness": "openapi_digest_report", "legs": legs}
+
+
 def _print_summary(results: list[LegResult], not_run: list[str]) -> bool:
     """Print the matrix table + verdict; return True (all green) or False."""
     print("\nLiteLLM compatibility matrix")
@@ -382,6 +420,7 @@ def run_matrix(
     keep: bool,
     fail_fast: bool,
     report_out: Path | None = None,
+    digest_out: Path | None = None,
 ) -> int:
     if extra_env:
         rendered = ", ".join(f"{k}={v}" for k, v in sorted(extra_env.items()))
@@ -390,6 +429,7 @@ def run_matrix(
         print(f"LiteLLM compatibility matrix: {', '.join(versions)} on port {port}")
 
     results: list[LegResult] = []
+    digest_legs: list[dict[str, object]] = []
     kept_version: str | None = None
     for index, version in enumerate(versions, 1):
         stack_env = _stack_env(port, version, master_key, extra_env)
@@ -404,6 +444,27 @@ def run_matrix(
             + ("" if result.green else f" — {result.note}"),
             flush=True,
         )
+        if digest_out is not None:
+            digest_entry = digest_after_leg(port, master_key, version)
+            digest_legs.append(digest_entry)
+            if "digest" in digest_entry:
+                captured = digest_entry["digest"]
+                assert isinstance(captured, dict)  # narrowed for indexing below
+                absent = sorted(
+                    key for key, entry in captured["endpoints"].items() if entry.get("absent")
+                )
+                print(
+                    f"[{index}/{len(versions)}] LiteLLM {version}: digest captured "
+                    f"(spec_version={captured['spec_version']}, absent={len(absent)})",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"[{index}/{len(versions)}] LiteLLM {version}: digest capture "
+                    f"FAILED — {digest_entry['capture_error']}",
+                    file=sys.stderr,
+                    flush=True,
+                )
         if not result.green:
             print(result.tail, file=sys.stderr, flush=True)
         # Intermediate legs must always come down (the container name is fixed,
@@ -429,6 +490,8 @@ def run_matrix(
     not_run = versions[len(results):] if fail_fast else []
     if report_out is not None:
         write_report(report_out, report_payload(versions, results, not_run))
+    if digest_out is not None:
+        write_report(digest_out, digest_payload_document(digest_legs))
     all_green = _print_summary(results, not_run)
     return 0 if all_green else 1
 
@@ -454,6 +517,7 @@ def main(argv: list[str] | None = None) -> int:
         keep=args.keep,
         fail_fast=args.fail_fast,
         report_out=args.report_out,
+        digest_out=args.digest_out,
     )
 
 
