@@ -125,9 +125,6 @@ def test_accept_drift_skips_fields_not_on_diff():
 # --- classify_survivors (apply-then-verify) ----------------------------------
 
 
-# --- classify_survivors (apply-then-verify) ----------------------------------
-
-
 def test_survivors_downgraded_to_accepted_noop():
     d = _diff(fields={"rpm_limit": (30, None)})
     rows = [{"budget_id": "b1", "rpm_limit": None, "max_budget": 100.0}]

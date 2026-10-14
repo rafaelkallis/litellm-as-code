@@ -243,21 +243,18 @@ def reconcile_models(
         if not changes:
             diffs.append(Diff("model", name, Action.NOOP))
             continue
-        # The diff carries the FULL comparable change set; the classification
-        # kernel then strips the server-owned part: on the hint-known path
-        # the cost keys are already declared, so accept_drift() removes them
-        # from the change set — a cost-only UPDATE downgrades to an accepted
-        # NOOP; a mixed (cost + real) UPDATE keeps the writable drift AND
-        # gains the SERVER_OWNED message (previously the mixed corner was
-        # dropped silently — issue #29's requested behavior).
         diff = Diff("model", name, Action.UPDATE, changes)
         writable, _classified = writable_changes("model", changes)
+        # Capture the drift keys BEFORE accept_drift(): Diff aliases the
+        # change dict and accept_drift() pops it IN PLACE — accept_drift
+        # strips the server-owned part (a cost-only UPDATE downgrades to an
+        # accepted NOOP; a mixed cost+real UPDATE keeps the writable drift
+        # AND gains the SERVER_OWNED message, replacing the silent drop of
+        # the mixed corner). The guard below is defined on the
+        # PRE-classification drift, so its semantics must not depend on that
+        # in-place popping.
+        pre_classification_keys = frozenset(changes)
         if _classified:
-            # Strips the server-owned part of the change set: a cost-only
-            # UPDATE downgrades to an accepted NOOP; a mixed (cost + real)
-            # UPDATE keeps the writable drift AND gains the SERVER_OWNED
-            # message (previously the mixed corner was dropped silently —
-            # issue #29's requested behavior).
             accept_drift(diff, _classified)
         if not writable:
             diffs.append(diff)
@@ -267,7 +264,8 @@ def reconcile_models(
             model_id = _resolve_model_id(remote) or ""
             client.patch_model(model_id, entry)
             # >= 1.102 acceptance tracking (probe-unknown fallback only):
-            # when the ONLY drift left is the two cost keys, the PATCH may
+            # when the ONLY drift was the two cost keys (pre-classification),
+            # the PATCH may
             # be a no-op server-side (dead PATCH is harmless on both
             # generations — v1.97 persists, >= 1.102 drops), so remember
             # it for the post-apply verification below. The PATCH body is
@@ -275,10 +273,10 @@ def reconcile_models(
             # cost keys the change set carries — harmless either way
             # (>= 1.102 drops them server-side; <= 1.101 re-persists the
             # same values). Desired values come from the spec entry
-            # (`want`, per-token). A model with
-            # ANY non-cost drift is deliberately NOT tracked: a non-cost
-            # change must never be swallowed by the acceptance phase.
-            if set(changes) <= set(_COST_KEYS):
+            # (`want`, per-token). A model with ANY non-cost drift is
+            # deliberately NOT tracked: a non-cost change must never be
+            # swallowed by the acceptance phase.
+            if pre_classification_keys <= set(_COST_KEYS):
                 cost_only_patched.append((diff, want))
 
     # ==== Apply-then-verify acceptance (non-dry-run only) ====
