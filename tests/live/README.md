@@ -91,3 +91,38 @@ subsequent `--dry-run` exits `0`.
 
 These specs are kept out of `examples/` precisely because they are test
 inputs: `examples/` is user-facing documentation.
+
+## Refreshing response fixtures (`tests/fixtures/responses/`, issue #28)
+
+The mock suite replays **scrubbed per-version response fixtures** through the
+real client/exporter/reconciler (`tests/test_response_fixtures.py`) so
+upstream envelope/schema/masking drift fails plain `pytest` CI without
+docker. The bundles are captured from a CONVERGED variant-E stack — never
+edit them by hand; re-record instead:
+
+```bash
+# one commit per version (both pinned versions on a normal day):
+python scripts/compat_matrix.py --versions v1.97.0  --record-fixtures tests/fixtures/responses
+python scripts/compat_matrix.py --versions v1.104.2 --record-fixtures tests/fixtures/responses
+# then review the posture ledger in each bundle's _meta.json and commit the
+# new/changed bundles together with any scrub-policy changes they forced.
+```
+
+What one bundle run produces under `<tag>/`:
+
+| file | content |
+|---|---|
+| `<step>.raw.json` | the response envelope as served (scrubbed: masker echoes kept, key tokens dropped, uuids/emails syntheticized to stable labels) |
+| `<step>.normalized.json` | the read view through the real client code (`normalize_steps`) |
+| `exported_spec.json` | the exporter's reference output for that recorded state |
+| `_meta.json` | proxy version, posture ledger (what was masked/dropped/kept), issued synthetic labels |
+
+Capture invariants (enforced at capture time): the sweep is GET-only and run
+TWICE — payloads must be byte-deterministic between sweeps or capture fails;
+the org gate (403 enterprise on unlicensed ≥ 1.102 proxies) is recorded as a
+fixture dimension (`v1.104.2`) while licensed stacks record a bare array.
+
+The nightly canary can also record fixtures (workflow_dispatch input
+`with_fixtures`) and uploads the per-leg bundles as run artifacts — they are adopted into
+`tests/fixtures/responses/` only by a deliberate PR (reviewable committed
+bytes, like the last-known-good digest of issue #26 — never auto-committed).
