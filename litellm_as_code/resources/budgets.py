@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..api import LiteLLMClient
+from ..classification import DETECTED_REASON, classify_survivors
 from ..diff import comparable_diff
 from ..types import Action, Diff
 
@@ -42,6 +43,9 @@ def reconcile_budgets(
 ) -> list[Diff]:
     diffs: list[Diff] = []
     live = {b.get("budget_id"): b for b in client.list_budgets() if b.get("budget_id")}
+    # (Diff, desired) pairs freshly applied THIS run; the apply-then-verify
+    # pass below re-diffs them against one fresh re-list (issue #29).
+    patched: list[tuple[Diff, dict[str, Any]]] = []
 
     for entry in spec_entries:
         budget_id = entry["budget_id"]
@@ -55,10 +59,34 @@ def reconcile_budgets(
             continue
 
         changes = comparable_diff(entry, existing, COMPARABLE)
-        diffs.append(
-            Diff("budget", display, Action.UPDATE if changes else Action.NOOP, changes)
-        )
+        diff = Diff("budget", display, Action.UPDATE if changes else Action.NOOP, changes)
+        diffs.append(diff)
         if changes and not dry_run:
             client.update_budget(entry)
+            patched.append((diff, entry))
+
+    # ==== Apply-then-verify classification (non-dry-run only, issue #29) ====
+    # A field that still differs after OUR update_budget just wrote it is
+    # demonstrated server-owned for this run: accepted on the diff (UPDATE
+    # downgrades to a NOOP plan line carrying the SERVER_OWNED message; the
+    # stderr notice fires at most once per run). Verification is
+    # self-correcting per run — if the proxy starts persisting the field
+    # again, the next run's verify sees it stick and the plan keeps the real
+    # UPDATE. --dry-run cannot verify (nothing is applied), so it keeps
+    # showing such drift as a pending update — the regression detector.
+    # Race guard: a budget row that vanished between the write and the
+    # re-list gets NO classification (the Diff stays untouched — the next
+    # run decides).
+    if not dry_run and patched:
+        classify_survivors(
+            "budget",
+            client.list_budgets(),
+            patched,
+            index=lambda rows: {
+                b.get("budget_id"): b for b in rows if b.get("budget_id")
+            },
+            rediff=lambda entry, row: comparable_diff(entry, row, COMPARABLE),
+            reason=DETECTED_REASON,
+        )
 
     return diffs

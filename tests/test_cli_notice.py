@@ -215,3 +215,30 @@ def test_exact_options_still_suppress_notice(capsys):
     assert rc == 1
     _, err = capsys.readouterr()
     assert "Rafael Kallis" not in err
+
+
+def test_quiet_flag_is_wired_to_the_reconcile_run(monkeypatch):
+    """--quiet now also gates the classification notice channel (issue #29):
+    main() must forward it to reconciler.run, not just the notice."""
+    from litellm_as_code import cli as cli_module
+
+    captured = {}
+
+    def fake_run(spec_path, **kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli_module, "run", fake_run)
+    rc = cli_module.main(
+        ["spec.yml", "--dry-run", "--quiet", "--base-url", "http://fake", "--api-key", "k"]
+    )
+    assert rc == 0
+    assert captured["quiet"] is True
+    assert captured["dry_run"] is True
+
+    monkeypatch.setattr(cli_module, "run", fake_run)
+    rc = cli_module.main(
+        ["spec.yml", "--base-url", "http://fake", "--api-key", "k"]
+    )
+    assert rc == 0
+    assert captured["quiet"] is False

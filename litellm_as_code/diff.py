@@ -4,6 +4,11 @@ LiteLLM injects server defaults & runtime metrics into read responses
 (e.g. `spend`, `updated_at`, `budget_reset_at`, `tpm_limit_type`, `mode`
 inference). Reconciling on those would cause perpetual drift, so we diff
 only a curated set of *manageable* fields per resource.
+
+Fields the proxy accepts but does not PERSIST are handled separately, after
+the apply, by the generic drift classification
+(litellm_as_code/classification.py, issue #29) — never here: at diff time a
+non-persisting field is still indistinguishable from real drift.
 """
 
 from __future__ import annotations

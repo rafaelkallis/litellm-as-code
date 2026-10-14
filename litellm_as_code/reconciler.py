@@ -6,7 +6,8 @@ from collections.abc import Iterator
 from typing import Any
 
 from .api import LiteLLMClient
-from .log import banner, info
+from .classification import reset_run
+from .log import banner, info, set_quiet_classified
 from .resources import (
     reconcile_budgets,
     reconcile_credentials,
@@ -105,12 +106,21 @@ def reconcile(
     *,
     dry_run: bool = False,
     prune: bool = False,
+    quiet: bool = False,
 ) -> Plan:
     """Run the convergence loop: spec diff -> apply (unless dry-run).
 
     The fixed stage order and the org/team member hand-offs live in
     `_stage_diffs` (single source of truth, AGENTS.md §5).
+
+    Classification (issue #29) is per-run state: the map of server-owned
+    fields and the once-per-run notices both reset here, so a classification
+    can never outlive the run that produced it. ``quiet`` gates ONLY the
+    classification notice channel (other warns stay always-on) — the plan
+    lines on stdout are unaffected.
     """
+    reset_run()
+    set_quiet_classified(quiet)
     spec = load_spec(spec_path)
     plan = Plan()
 
@@ -128,13 +138,14 @@ def run(
     api_key: str,
     dry_run: bool = False,
     prune: bool = False,
+    quiet: bool = False,
 ) -> int:
     info("litellm-as-code", f"target={base_url} spec={spec_path}")
     if dry_run:
         info("litellm-as-code", "DRY-RUN — no changes will be applied")
 
     client = LiteLLMClient(base_url, api_key)
-    plan = reconcile(spec_path, client, dry_run=dry_run, prune=prune)
+    plan = reconcile(spec_path, client, dry_run=dry_run, prune=prune, quiet=quiet)
     _render_plan(plan)
 
     # exit code semantics like terraform plan/apply diff detection:
