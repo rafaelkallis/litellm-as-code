@@ -23,8 +23,8 @@ _DESCRIPTION = (
 
 
 _QUIET_HELP = (
-    "suppress the author & license notice (for scripting); this does not "
-    "suppress command output"
+    "suppress the author & license notice and the drift-classification "
+    "notices (for scripting); this does not suppress command output"
 )
 
 
@@ -179,6 +179,7 @@ def main(argv: list[str] | None = None) -> int:
             api_key=args.api_key,
             dry_run=args.dry_run,
             prune=args.prune,
+            quiet=args.quiet,
         )
     except Exception as e:  # noqa: BLE001 - top-level CLI error surfacing
         print(f"error: {e}", file=sys.stderr)
