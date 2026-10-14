@@ -176,13 +176,17 @@ jobs:
               "note": "refreshed by the nightly canary on a green, drift-free run (issue #26)",
           }
           with open("tests/live/compat/openapi-last-known-good.meta.json", "w") as fh:
-              json.dump(meta, fh, indent=2, sort_keys=True)
-              fh.write("\n")
+            json.dump(meta, fh, indent=2, sort_keys=True)
+            fh.write("\n")
           print("sidecar written:", json.dumps(meta, sort_keys=True))
           PY
+          # COMPAT.md's dated verified block derives from THIS sidecar
+          # (issue #30) — regenerate it into the same checked-content commit;
+          # a no-op (and nothing staged) when the render is already current.
+          python scripts/compat_doc.py build
           git config user.name "compat-canary bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add tests/live/compat/openapi-last-known-good.json tests/live/compat/openapi-last-known-good.meta.json
+          git add tests/live/compat/openapi-last-known-good.json tests/live/compat/openapi-last-known-good.meta.json COMPAT.md
           git diff --cached --quiet && echo "digest unchanged — nothing to commit" || {
             git commit -m "chore(compat): refresh last-known-good consumed-surface digest [skip ci]"
             git push
