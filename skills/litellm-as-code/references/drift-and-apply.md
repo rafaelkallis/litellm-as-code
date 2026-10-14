@@ -20,6 +20,7 @@ of truth. Existence is determined by API lookups against stable identity fields:
 | key | `key_alias` (proxy-enforced unique) | user_id, team_id, models, max_budget, budget_duration, allowed_routes |
 | credential | `credential_name` | credential_info, model_id (values are write-once) |
 | model | `model_name` | mode, base_model, tier, custom_llm_provider, litellm_credential_name, costs |
+| budget | `budget_id` | max_budget, soft_budget, max_parallel_requests, tpm_limit, rpm_limit, model_max_budget, budget_duration |
 
 Key/credential existence is read via `key_alias` / `credential_name`; user/team/
 model via `user_id` / `team_id` / `model_name`.
@@ -34,6 +35,19 @@ model via `user_id` / `team_id` / `model_name`.
 - **Runtime metrics** (`spend`, `updated_at`, `status`, `budget_reset_at`) and
   **server-injected defaults** (`default_user_id`, `budget_duration`, `mode`,
   `tpm_limit_type`, `rpm_limit_type`). Never adopt these into desired state.
+
+## Server-owned drift (accepted, not actionable)
+
+Some fields the proxy accepts but does not persist (e.g. per-deployment
+model costs on LiteLLM >= 1.102 — pricing there is server-derived). Their
+residual drift is *classified*, not actionable: plan lines are marked
+`SERVER_OWNED — <fields>: <reason>` and an update whose comparable drift is
+entirely server-owned renders as an accepted `ok` line. Classification is
+per-run and self-correcting — if the proxy starts persisting the field
+again, the plan shows the real update again. `--dry-run` cannot verify
+(nothing is applied), so in the apply-verify acceptance path it keeps
+showing such drift as a pending update; `--quiet` suppresses the stderr
+echo but never the plan-line marker.
 
 ## The apply flow
 

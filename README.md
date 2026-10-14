@@ -213,7 +213,8 @@ options:
   --api-key KEY          admin API key (env: LITELLM_API_KEY / API_KEY)
   --dry-run              print changes without applying; exit 2 if any
   --prune                (reserved) delete live resources absent from spec
-  --quiet                suppress the author & license notice (for scripting);
+  --quiet                suppress the author & license notice and the
+                         drift-classification notices (for scripting);
                          does not suppress command output
 
 Export mode (read-only):
@@ -501,7 +502,8 @@ LiteLLM 1.102 on). Variant E (an org-free mirror of variant C) always runs,
 licensed or not. On unlicensed proxies >= 1.102, org-free specs converge
 (the `/organization` 403 is tolerated with a warning) while specs declaring
 `organizations:` cannot; per-deployment model costs are not persisted there,
-so cost-only drift is accepted with a warning.
+so cost-only drift is accepted with a warning (plan lines marked
+`SERVER_OWNED`, issue #29).
 
 See `AGENTS.md` for the full contributor guide, scope boundaries, and API
 quirks reference.

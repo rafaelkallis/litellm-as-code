@@ -112,18 +112,36 @@ backoff. Keep new resources on the retry path.
 
 ## 5. Per-resource identity & drift (keep in sync with resources/*.py)
 
-| resource | identity | comparable fields |
-|---|---|---|
-| user | `user_id` (stable UUID) | user_alias, user_email, user_role, auto_create_key |
-| team | `team_id` (or `team_alias` fallback) | team_alias, organization_id, max_budget, budget_duration, models |
-| team member | (team_id, user_id) | role |
-| key | `key_alias` | user_id, team_id, models, max_budget, budget_duration, allowed_routes |
-| credential | `credential_name` | credential_info, model_id (values are write-once) |
-| model | `model_name` | mode, base_model, tier, custom_llm_provider, litellm_credential_name, costs |
+| resource | identity | comparable fields | classification (issue #29) |
+|---|---|---|---|
+| user | `user_id` (stable UUID) | user_alias, user_email, user_role, auto_create_key | writable (no drift class observed) |
+| team | `team_id` (or `team_alias` fallback) | team_alias, organization_id, max_budget, budget_duration, models | writable (no drift class observed) |
+| team member | (team_id, user_id) | role | role echo default realigned at diff time (issue #12) |
+| key | `key_alias` | user_id, team_id, models, max_budget, budget_duration, allowed_routes | writable (no drift class observed) |
+| credential | `credential_name` | credential_info, model_id (values are write-once) | values write-once, handled at reset/diff time (issue #11) |
+| model | `model_name` | mode, base_model, tier, custom_llm_provider, litellm_credential_name, costs | costs: capability-gated server-owned when not persisting + apply-verify fallback |
+| budget | `budget_id` | max_budget, soft_budget, max_parallel_requests, tpm_limit, rpm_limit, model_max_budget, budget_duration | writable + generic apply-verify (classification kernel consumer) |
 
 Model cost conversion: spec uses `input_cost_per_million_tokens` /
 `output_cost_per_million_tokens` (ecosystem convention); the API wants
 per-token. Convert ÷1e6 when sending, and back when comparing.
+
+Drift classification (`litellm_as_code/classification.py`, issue #29):
+every comparable (resource, field) is per-run either **writable** (default)
+or **server-owned with reason**. A declared/verified server-owned field is
+never skipped when writing — its residual drift is classified AFTER the
+apply (or at declare time) into an accepted NOOP plan line marked
+`SERVER_OWNED — <fields>: <reason>` (machine-greppable on stdout) with the
+stderr notice at most once per run, suppressed by `--quiet`. Classification
+is per-run and self-correcting: if the server starts persisting a field
+again, the FIRST verify pass of that run sees the write stick and the plan
+keeps the real UPDATE. `--dry-run` cannot verify (nothing is applied), so
+discovered acceptance keeps showing such drift as a pending update there —
+the dry-run-as-regression-detector asymmetry. Capabilities (issue #27) own
+the gate knowledge; classification feeds FROM capability facts and owns the
+run's drift accounting. The next drift class to land is a registry entry
+(`VERIFIED_SERVER_OWNED`, deliberately empty) or a stage wiring — never a
+per-resource hand-patch.
 
 ## 6. CLI contract (stable)
 
