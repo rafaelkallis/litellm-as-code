@@ -803,6 +803,47 @@ class FixtureClient(LiteLLMClient):
 # capture orchestration
 
 
+def normalize_steps(
+    client: FixtureClient, steps: dict[str, Any]
+) -> dict[str, Any]:
+    """Derive the committed `.normalized.json` views through the REAL client
+    methods (the same code the mock suite replays; used at capture time and
+    by the replay tests).
+
+    An org-gate payload records as a fixture dimension instead of failing the
+    capture; any OTHER read failure is a capture bug.
+    """
+    normalized: dict[str, Any] = {}
+    for step, reader in (
+        ("budgets", "list_budgets"),
+        ("models", "list_models"),
+        ("credentials", "list_credentials"),
+        ("organizations", "list_organizations"),
+        ("users", "list_users"),
+        ("teams", "list_teams"),
+        ("keys", "list_keys"),
+        ("guardrails", "list_guardrails"),
+        ("policies", "list_policies"),
+    ):
+        try:
+            normalized[step] = getattr(client, reader)()
+        except ReconcilerError as exc:
+            if step == "organizations" and steps["organizations"].get(
+                "fixture_gate_error"
+            ):
+                normalized[step] = {"fixture_gate_error": True}
+            else:
+                raise CaptureError(
+                    f"fixture capture: replay of {step} read failed: {exc}"
+                ) from exc
+    # team-info normalized: unwrap each recorded envelope like get_team_info
+    normalized["team-info"] = {
+        team_id: LiteLLMClient.unwrap(payload, "team_info")
+        for team_id, payload in steps["team-info"].items()
+    }
+    return normalized
+
+
 def run_capture(
     transport: Callable[[str, str, dict[str, Any]], tuple[int, Any]] | None,
     litellm_tag: str,
@@ -842,34 +883,7 @@ def run_capture(
     posture = _posture_checks(sweep1, steps, state)
 
     client = FixtureClient.from_payloads(steps, version1)
-    normalized: dict[str, Any] = {}
-    for step, reader in (
-        ("budgets", "list_budgets"),
-        ("models", "list_models"),
-        ("credentials", "list_credentials"),
-        ("organizations", "list_organizations"),
-        ("users", "list_users"),
-        ("teams", "list_teams"),
-        ("keys", "list_keys"),
-        ("guardrails", "list_guardrails"),
-        ("policies", "list_policies"),
-    ):
-        try:
-            normalized[step] = getattr(client, reader)()
-        except ReconcilerError as exc:
-            if step == "organizations" and steps["organizations"].get(
-                "fixture_gate_error"
-            ):
-                normalized[step] = {"fixture_gate_error": True}
-            else:
-                raise CaptureError(
-                    f"fixture capture: replay of {step} read failed: {exc}"
-                ) from exc
-    # team-info normalized: unwrap each recorded envelope like get_team_info
-    normalized["team-info"] = {
-        team_id: LiteLLMClient.unwrap(payload, "team_info")
-        for team_id, payload in steps["team-info"].items()
-    }
+    normalized = normalize_steps(client, steps)
 
     exported = build_spec(client)
 
