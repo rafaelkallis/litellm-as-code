@@ -314,6 +314,18 @@ def build_parser() -> argparse.ArgumentParser:
         "one JSON file with a digest per leg — the nightly canary diffs this "
         "against the committed last-known-good (issue #26)",
     )
+    parser.add_argument(
+        "--record-fixtures",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="after a GREEN leg, record scrubbed per-version response fixtures "
+        "under DIR/<litellm-tag>/ (scripts/record_fixtures.py, issue #28). "
+        "The stack must be healthy and the state the converged variant-E "
+        "baseline; a capture failure marks the leg red. Nightly runs should "
+        "target a scratch dir and post artifacts for deliberate adoption — "
+        "committed fixtures refresh only via PR.",
+    )
     return parser
 
 
@@ -375,6 +387,25 @@ def digest_after_leg(
     return {"version": version, "digest": _digest.digest_payload(spec)}
 
 
+def record_fixtures_after_leg(
+    port: int, master_key: str, version: str, out_dir: Path
+) -> Path:
+    """Record this green leg's response fixtures under out_dir/<version>/.
+
+    Thin indirection so tests can monkeypatch the boundary; the capture lives
+    in scripts/record_fixtures.py (imported lazily — the sibling dir is on
+    sys.path, as with openapi_digest above).
+    """
+    import record_fixtures
+
+    return record_fixtures.capture_from_stack(
+        port=port,
+        master_key=master_key,
+        litellm_tag=version,
+        out_dir=out_dir,
+    )
+
+
 def digest_payload_document(legs: list[dict[str, object]]) -> dict[str, object]:
     """Digest report payload ({harness, legs: [{version, digest|capture_error}]})."""
     return {"harness": "openapi_digest_report", "legs": legs}
@@ -421,6 +452,7 @@ def run_matrix(
     fail_fast: bool,
     report_out: Path | None = None,
     digest_out: Path | None = None,
+    record_dir: Path | None = None,
 ) -> int:
     if extra_env:
         rendered = ", ".join(f"{k}={v}" for k, v in sorted(extra_env.items()))
@@ -463,6 +495,38 @@ def run_matrix(
                     f"[{index}/{len(versions)}] LiteLLM {version}: digest capture "
                     f"FAILED — {digest_entry['capture_error']}",
                     file=sys.stderr,
+                    flush=True,
+                )
+        if record_dir is not None:
+            # Fixtures are recorded ONLY on a green leg: the suite has already
+            # converged + verified the variant-E state and left it untouched
+            # (test_export_then_reapply_is_noop -> test_variant_converges...
+            # both write nothing). A capture failure reds the leg loudly so
+            # the nightly lifecycle sees it; default runs are unaffected.
+            if result.green:
+                try:
+                    fixture_dir = record_fixtures_after_leg(
+                        port=port, master_key=master_key, version=version, out_dir=record_dir
+                    )
+                    print(
+                        f"[{index}/{len(versions)}] LiteLLM {version}: fixtures "
+                        f"recorded under {fixture_dir}",
+                        flush=True,
+                    )
+                except Exception as exc:  # noqa: BLE001 — the leg is what we redden
+                    result.green = False
+                    result.note = f"fixture capture failed: {exc}"
+                    print(
+                        f"[{index}/{len(versions)}] LiteLLM {version}: fixture capture "
+                        f"FAILED — {result.note}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+            else:
+                print(
+                    f"[{index}/{len(versions)}] LiteLLM {version}: fixtures NOT "
+                    "recorded (leg not green — never record from an unverified "
+                    "proxy state)",
                     flush=True,
                 )
         if not result.green:
@@ -518,6 +582,7 @@ def main(argv: list[str] | None = None) -> int:
         fail_fast=args.fail_fast,
         report_out=args.report_out,
         digest_out=args.digest_out,
+        record_dir=args.record_fixtures,
     )
 
 
