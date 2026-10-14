@@ -1,0 +1,25 @@
+[
+  {
+    "allowed_models": [],
+    "budget_duration": "30d",
+    "budget_id": "var-c-budget",
+    "budget_reset_at": "2026-11-01T00:00:00Z",
+    "created_at": "2026-10-14T11:13:25.719000Z",
+    "created_by": "default_user_id",
+    "end_users": null,
+    "keys": null,
+    "max_budget": 50.0,
+    "max_parallel_requests": null,
+    "model_max_budget": null,
+    "organization": null,
+    "organization_membership": null,
+    "projects": null,
+    "rpm_limit": 1000,
+    "soft_budget": 40.0,
+    "tags": null,
+    "team_membership": null,
+    "tpm_limit": 100000,
+    "updated_at": "2026-10-14T11:13:25.719000Z",
+    "updated_by": "default_user_id"
+  }
+]

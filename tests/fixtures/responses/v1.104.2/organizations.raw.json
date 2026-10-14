@@ -1,0 +1,5 @@
+{
+  "detail": "{\"detail\":{\"error\":\"Organizations are only available for LiteLLM Enterprise users. You must be a LiteLLM Enterprise user to use this feature. If you have a license please set `LITELLM_LICENSE` in your env. Get a 7 day trial key here: https://www.litellm.ai/enterprise#trial. \\nPricing: https://www.litellm.ai/#pricing\"}}",
+  "fixture_gate_error": true,
+  "status": 403
+}

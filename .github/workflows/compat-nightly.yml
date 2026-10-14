@@ -26,6 +26,11 @@ on:
           - none
           - red
           - green
+      with_fixtures:
+        description: "Also record scrubbed response fixtures (issue #28) as run artifacts — adopt into tests/fixtures/ only via a deliberate PR"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write # refreshes the committed last-known-good digest (green only)
@@ -68,12 +73,21 @@ jobs:
         id: leg
         if: ${{ inputs.simulate != 'red' && inputs.simulate != 'green' }}
         continue-on-error: true # the lifecycle step below runs on red too
-        run: >-
-          python scripts/compat_matrix.py
-          --versions v1.97.0,${{ steps.canary.outputs.tag }}
-          --port 4001
-          --report-out reports/nightly-report.json
-          --digest-out reports/nightly-digest.json
+        run: |
+          # Issue #28: with_fixtures (workflow_dispatch only) adds the fixture
+          # capture hat — recorded per green leg under reports/nightly-fixtures
+          # and uploaded as an artifact below. Scheduled runs default it OFF,
+          # so the nightly's verdict/latency behavior is unchanged.
+          extra_args=()
+          if [ "${{ inputs.with_fixtures }}" = "true" ]; then
+            extra_args+=(--record-fixtures reports/nightly-fixtures)
+          fi
+          python scripts/compat_matrix.py \
+            --versions "v1.97.0,${{ steps.canary.outputs.tag }}" \
+            --port 4001 \
+            --report-out reports/nightly-report.json \
+            --digest-out reports/nightly-digest.json \
+            "${extra_args[@]}"
 
       - name: Fabricate rehearsal report (--simulate)
         if: ${{ inputs.simulate == 'red' || inputs.simulate == 'green' }}
@@ -183,6 +197,7 @@ jobs:
             reports/nightly-report.json
             reports/nightly-digest.json
             reports/contract-drift.txt
+            reports/nightly-fixtures/
           if-no-files-found: warn
 
       - name: Manage compat-canary tracking issue

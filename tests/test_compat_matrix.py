@@ -219,3 +219,114 @@ def test_parser_exposes_digest_out_and_defaults_to_none():
     assert parser.parse_args([]).digest_out is None
     explicit = parser.parse_args(["--digest-out", "reports/digest.json"])
     assert str(explicit.digest_out) == "reports/digest.json"
+
+
+# ------------------------------------------------------- response fixtures
+# (--record-fixtures: per-leg scrubbed response captures —
+# scripts/record_fixtures.py, issue #28; recorded ONLY off a green leg.)
+
+
+def test_parser_exposes_record_fixtures_and_defaults_to_none():
+    parser = compat_matrix.build_parser()
+    assert parser.parse_args([]).record_fixtures is None
+    explicit = parser.parse_args(["--record-fixtures", "tests/fixtures/responses"])
+    assert str(explicit.record_fixtures) == "tests/fixtures/responses"
+
+
+def test_run_matrix_records_fixtures_on_green_legs_with_the_leg_arguments(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        compat_matrix, "run_leg", lambda *a, **k: _leg(version=k.get("version") or a[2])
+    )
+    monkeypatch.setattr(
+        compat_matrix,
+        "record_fixtures_after_leg",
+        lambda port, key, version, out_dir: _canned_digest(version),  # any return is fine
+    )
+    monkeypatch.setattr(
+        compat_matrix, "_compose", lambda env, *a, **k: type("P", (), {"returncode": 0})()
+    )
+    calls: list[tuple[int, str, str]] = []
+
+    def fake_record(port, master_key, version, out_dir):
+        calls.append((port, master_key, version))
+        return out_dir / version
+
+    monkeypatch.setattr(compat_matrix, "record_fixtures_after_leg", fake_record)
+    assert (
+        compat_matrix.run_matrix(
+            port=4001,
+            versions=["v1.97.0", "v1.104.2"],
+            master_key="mk",
+            extra_env={},
+            pytest_extra=[],
+            keep=False,
+            fail_fast=False,
+            record_dir=tmp_path,
+        )
+        == 0
+    )
+    assert calls == [(4001, "mk", "v1.97.0"), (4001, "mk", "v1.104.2")]
+
+
+def test_run_matrix_skips_fixture_capture_on_red_legs(monkeypatch, tmp_path):
+    recorded: list[str] = []
+    monkeypatch.setattr(
+        compat_matrix, "run_leg", lambda *a, **k: _leg(version=a[2], green=False)
+    )
+    monkeypatch.setattr(
+        compat_matrix,
+        "record_fixtures_after_leg",
+        lambda port, key, version, out_dir: recorded.append(version) or out_dir,
+    )
+    monkeypatch.setattr(
+        compat_matrix, "_compose", lambda env, *a, **k: type("P", (), {"returncode": 0})()
+    )
+    assert (
+        compat_matrix.run_matrix(
+            port=4001,
+            versions=["v1.97.0", "v1.104.2"],
+            master_key="k",
+            extra_env={},
+            pytest_extra=[],
+            keep=False,
+            fail_fast=False,
+            record_dir=tmp_path,
+        )
+        == 1
+    )
+    assert recorded == []  # never record from an unverified proxy state
+
+
+def test_fixture_capture_failure_reds_the_leg_and_the_report(monkeypatch, tmp_path):
+    monkeypatch.setattr(compat_matrix, "run_leg", lambda *a, **k: _leg(version=a[2]))
+
+    def boom(port, master_key, version, out_dir):
+        raise RuntimeError("capture went sideways")
+
+    monkeypatch.setattr(compat_matrix, "record_fixtures_after_leg", boom)
+    monkeypatch.setattr(
+        compat_matrix, "_compose", lambda env, *a, **k: type("P", (), {"returncode": 0})()
+    )
+    report = tmp_path / "report.json"
+    assert (
+        compat_matrix.run_matrix(
+            port=4001,
+            versions=["v1.97.0"],
+            master_key="k",
+            extra_env={},
+            pytest_extra=[],
+            keep=False,
+            fail_fast=False,
+            report_out=report,
+            record_dir=tmp_path,
+        )
+        == 1
+    )
+    # the report (the canary lifecycle's only input) reflects the reddened leg
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["all_green"] is False
+    assert payload["legs"][0]["note"] == (
+        "fixture capture failed: capture went sideways"
+    )

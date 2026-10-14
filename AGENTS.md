@@ -272,6 +272,35 @@ is refreshed by the nightly only on green, drift-free runs — treat drift as
 a watch signal (server contract moved, or `api.py` gained endpoints), never
 as a break verdict by itself.
 
+**Response fixtures** (issue #28): `scripts/record_fixtures.py` records the
+SCRUBBED per-version read responses over a converged variant-E stack
+(`compat_matrix.py --record-fixtures tests/fixtures/responses`, green legs
+only) and commits one self-describing bundle per pinned version under
+`tests/fixtures/responses/<tag>/` (`<step>.raw.json` + `.normalized.json` +
+`exported_spec.json` + `_meta.json`). Re-record — never hand-edit. The
+The capture sweeps GET-only, twice, and fails closed on non-determinism
+between sweeps; secret posture is enforced inside the capture (masking present in
+`credential_values`, raw `key` absent, and the scrub keeps masker echoes /
+drops key tokens / syntheticizes uuid+email identifiers to stable labels
+shared across files — the `_meta.json` posture ledger is reviewable, no
+raw identifiers are ever committed). `tests/test_response_fixtures.py`
+replays the bytes through the REAL client/exporter/reconciler: parser
+contract (re-deriving the views reproduces the committed `.normalized.json`),
+export contract, and the converged no-op (re-applying the exported spec
+against the same recorded state mutates nothing — keys stay write-once).
+Distinguish from the #26 digest: the digest pins the ENDPOINT CONTRACT
+(surface of specified shapes, refreshed automatically by a green nightly);
+fixtures pin the RESPONSE SHAPES of the pinned versions (full envelope
+content, scrubbed-of-secrets, refreshed only by a deliberate
+re-recording PR). `scripts/compat_matrix.py --record-fixtures` is wired to
+`CaptureError`-reddening (`fixture capture failed: …` note lands in the
+canary lifecycle report); the nightly only records when a workflow_dispatch
+input asks (`with_fixtures`), uploading bundles as artifacts for adoption.
+When `api.py`'s consumed read surface changes, the pinned capture-steps
+table (asserted against `api.py` in `tests/test_record_fixtures.py`) forces
+a capture update — re-record and review the posture ledger of the new
+generation.
+
 Floor-tag maintenance is deliberately NOT automated: bumping `v1.97.0`
 marks a generation as re-verified and must be a deliberate PR (a red floor
 leg without a red canary is filed by the same lifecycle — it means a

@@ -1,0 +1,41 @@
+{
+  "fixture_version": 1,
+  "harness": "record_fixtures",
+  "litellm_tag": "v1.97.0",
+  "org_gate_recorded": false,
+  "posture": {
+    "benign_numeric_sensitive_paths": [
+      "guardrails.guardrails[0].litellm_params.send_user_api_key_alias",
+      "guardrails.guardrails[0].litellm_params.send_user_api_key_team_id",
+      "guardrails.guardrails[0].litellm_params.send_user_api_key_user_id",
+      "keys.keys[0].is_session_token",
+      "teams.teams[0].keys_count",
+      "users.users[0].key_count",
+      "users.users[1].key_count"
+    ],
+    "credential_values_masked": true,
+    "dropped_sensitive_paths": [
+      "keys.keys[0].key_name",
+      "keys.keys[0].key_type",
+      "keys.keys[0].token",
+      "models.data[0].model_info.key"
+    ],
+    "key_field_absent_on_key_rows": true,
+    "masked_value_paths": [
+      "credentials.credentials[0].credential_values.api_key"
+    ]
+  },
+  "proxy_openapi_version": "1.97.0",
+  "spec_variant": "variant-e",
+  "syntheticized": {
+    "emails": 1,
+    "issued": [
+      "fixture-uuid-0001",
+      "fixture-uuid-0002",
+      "fixture-uuid-0003",
+      "fixture-uuid-0004",
+      "scrub-1@example.com"
+    ],
+    "uuids": 4
+  }
+}

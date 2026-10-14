@@ -482,6 +482,18 @@ litellm-as-code started consuming new endpoints. Review the drift, adapt
 the client/tests as needed, then let a clean nightly commit the new
 baseline.
 
+Per-version **response fixtures** complement the digest (issue #28):
+`python scripts/compat_matrix.py --versions v1.97.0 --record-fixtures
+tests/fixtures/responses` captures the proxy's scrubbed read responses over
+a converged variant-E stack and commits self-describing bundles under
+`tests/fixtures/responses/<tag>/`. The mock suite then replays those bytes
+through the *real* client/exporter/reconciler (`tests/test_response_fixtures.py`),
+so envelope/schema/masking drift fails plain `pytest` CI without docker.
+Fixtures are scrubbed (no key tokens, no raw identifiers — see each bundle's
+`_meta.json` posture ledger) and are refreshed only by a deliberate
+re-recording PR; the nightly can record them as run artifacts on dispatch
+(`with_fixtures` input).
+
 Caveats: variants A/B/C and the mutation round are skipped in the matrix —
 they assert enterprise-gated capabilities (team-admin member roles
 everywhere; whole organization management on unlicensed proxies from
