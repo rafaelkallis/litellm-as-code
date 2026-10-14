@@ -317,9 +317,12 @@ def test_version_probe_mixed_drift_reports_only_appliable_deltas(tmp_path):
     plan = reconcile(spec_path, client, dry_run=True)
     diff = _model_diff(plan)
     assert diff.action is Action.UPDATE
-    # costs suppressed from the plan: only the appliable delta is described
+    # costs classified out of the plan: only the appliable delta is
+    # listed; the accepted pricing drift carries the generic SERVER_OWNED
+    # marker (issue #29) with the pricing reason tag inside.
     assert set(diff.changes) == {"mode"}
-    assert diff.message == ""
+    assert "SERVER_OWNED" in diff.message
+    assert "SERVER_DERIVED_PRICING" in diff.message
     # the non-cost delta applies; a follow-up run then reports no drift at all
     plan = reconcile(spec_path, client, dry_run=False)  # applies mode
     assert set(_model_diff(plan).changes) == {"mode"}
