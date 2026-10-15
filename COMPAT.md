@@ -16,14 +16,14 @@ content**: derived from or verified against repo state on every test run
 | **unlisted** | anything else. Assume the admin-API contract of the nearest verified minor — upstream ships a new minor every ~6–7 days and did not earn our guarantees. Structural consumed-surface moves are caught by the nightly's [OpenAPI digest](https://github.com/rafaelkallis/litellm-as-code/actions/workflows/compat-nightly.yml) diff; behavioral ones by the canary. Run the matrix yourself and report reds. |
 
 <!-- BEGIN GENERATED: verified — scripts/compat_doc.py; do not edit -->
-Verified as of **2026-10-14** — the nightly canary ran floor `v1.97.0` and latest stable `v1.105.1` green: [38541967135](https://github.com/rafaelkallis/litellm-as-code/actions/runs/38541967135)
+Verified as of **2026-10-15** — the nightly canary ran floor `v1.97.0` and latest stable `v1.105.1` green: [38709877803](https://github.com/rafaelkallis/litellm-as-code/actions/runs/38709877803)
 
 | tier | LiteLLM | what verifies it | where to check |
 |---|---|---|---|
-| floor | `v1.97.0` | publish gates (PyPI + GHCR), nightly floor, first matrix leg | green on the linked run above (2026-10-14) |
+| floor | `v1.97.0` | publish gates (PyPI + GHCR), nightly floor, first matrix leg | green on the linked run above (2026-10-15) |
 | matrix leg | `v1.97.0` | PR/push compat matrix (`.github/workflows/compat-matrix.yml`), per-leg digest artifact | status of the latest run on the [workflow page](https://github.com/rafaelkallis/litellm-as-code/actions/workflows/compat-matrix.yml) |
 | matrix leg | `v1.104.2` | PR/push compat matrix (`.github/workflows/compat-matrix.yml`), per-leg digest artifact | status of the latest run on the [workflow page](https://github.com/rafaelkallis/litellm-as-code/actions/workflows/compat-matrix.yml) |
-| canary | `v1.105.1` | nightly canary leg — latest stable at 04:00 UTC, resolved from `releases/latest` | green 2026-10-14 (run linked above) |
+| canary | `v1.105.1` | nightly canary leg — latest stable at 04:00 UTC, resolved from `releases/latest` | green 2026-10-15 (run linked above) |
 | unlisted | any other version | assume the admin-API contract of the nearest verified minor above (the consumed-surface digest watches structural moves); run the matrix yourself — `scripts/compat_matrix.py --versions vX.Y.Z` — and [report reds](https://github.com/rafaelkallis/litellm-as-code/issues/new) | — |
 <!-- END GENERATED: verified -->
 
