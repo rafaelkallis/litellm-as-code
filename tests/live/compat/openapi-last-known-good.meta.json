@@ -1,6 +1,6 @@
 {
-  "captured_at": "2026-10-15",
+  "captured_at": "2026-10-16",
   "litellm_version": "1.105.1",
   "note": "refreshed by the nightly canary on a green, drift-free run (issue #26)",
-  "run_url": "https://github.com/rafaelkallis/litellm-as-code/actions/runs/38709877803"
+  "run_url": "https://github.com/rafaelkallis/litellm-as-code/actions/runs/38876677110"
 }
